@@ -39,6 +39,9 @@ mod event_emission;
 mod test_upgrade;
 
 #[cfg(test)]
+mod test_cluster_boundaries;
+
+#[cfg(test)]
 mod test_batch_error_events;
 
 #[cfg(test)]
