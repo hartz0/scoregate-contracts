@@ -3263,6 +3263,34 @@ pub fn get_signer_state_record(env: &Env, signer: &Address) -> Option<SignerStat
     env.storage().persistent().get(&DataKeyD::SignerState(signer.clone()))
 }
 
+/// Grace period for signer state changes, defaulting to 1 hour.
+///
+/// Restored after the `ledgerlens-score` -> `scoregate-score` package rename
+/// dropped it, which left `governance_helpers.rs` calling a function that did not
+/// exist and broke the build.
+pub fn get_signer_grace_period_secs(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKeyD::SignerGracePeriodSecs)
+        .unwrap_or(crate::constants::DEFAULT_SIGNER_GRACE_PERIOD_SECS)
+}
+
+pub fn set_signer_grace_period_secs(env: &Env, secs: u64) {
+    env.storage().instance().set(&DataKeyD::SignerGracePeriodSecs, &secs);
+}
+
+/// Signer addresses eligible to sign, in priority order.
+pub fn get_active_signer_index(env: &Env) -> Vec<Address> {
+    env.storage()
+        .instance()
+        .get(&DataKeyD::ActiveSignerIndex)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+pub fn set_active_signer_index(env: &Env, signers: &Vec<Address>) {
+    env.storage().instance().set(&DataKeyD::ActiveSignerIndex, signers);
+}
+
 // ── #631: Emergency freeze / thaw ──────────────────────────────────────────
 
 /// Returns `true` when the contract is in emergency freeze mode (stronger

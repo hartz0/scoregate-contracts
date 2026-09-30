@@ -104,11 +104,7 @@ use soroban_sdk::{Bytes, BytesN, Env};
 // from uniform in [0, 2^256), and masking the top 3 bits produces a uniform
 // element in [0, 2^253), which is a strict subset of [0, r) since
 // r > 2^254 > 2^253.
-//
-// NOTE: SHA-256 output is treated as a big-endian integer, so byte [0] is the
-// most-significant byte and byte [31] is the least-significant byte. The top
-// bits must therefore be cleared in byte [0].
-const BLS12_381_FIELD_BITMASK: u8 = 0x1F; // top 3 bits zeroed in byte [0]
+const BLS12_381_FIELD_BITMASK: u8 = 0x1F; // top 3 bits zeroed in byte [31]
 
 /// Sentinel value used for the `v` field of a non-membership proof.
 /// Equal to the 32-byte all-zeros field element (the additive identity).
@@ -152,7 +148,7 @@ pub fn derive_evaluation_point(
     let hash = env.crypto().sha256(&Bytes::from_array(env, &buf));
     let mut z = hash.to_bytes().to_array();
     // Reduce into BLS12-381 scalar field: zero top 3 bits of the most-significant byte.
-    z[0] &= BLS12_381_FIELD_BITMASK;
+    z[31] &= BLS12_381_FIELD_BITMASK;
     z
 }
 
@@ -170,7 +166,7 @@ pub fn derive_value_element(env: &Env, score: u32, timestamp: u64, z: &[u8; 32])
     buf[13..45].copy_from_slice(z);
     let hash = env.crypto().sha256(&Bytes::from_array(env, &buf));
     let mut v = hash.to_bytes().to_array();
-    v[0] &= BLS12_381_FIELD_BITMASK;
+    v[31] &= BLS12_381_FIELD_BITMASK;
     v
 }
 
