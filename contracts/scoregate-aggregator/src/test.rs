@@ -480,6 +480,57 @@ fn test_get_watchlist_status_returns_true_when_all_shards_watchlist_wallet() {
 }
 
 #[test]
+fn test_get_watchlist_status_skips_unhealthy_shard() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let agg_id = env.register_contract(None, ScoreGateAggregator);
+    let client = ScoreGateAggregatorClient::new(&env, &agg_id);
+    let admin = Address::generate(&env);
+    let (shard_a_id, shard_a_client) = setup_score_shard(&env);
+    let (shard_b_id, _) = setup_score_shard(&env);
+
+    client.initialize(&admin);
+    client.add_shard(&shard_a_id);
+    client.add_shard(&shard_b_id);
+
+    let wallet = Address::generate(&env);
+    shard_a_client.set_watchlist(&soroban_sdk::Vec::new(&env), &wallet, &true);
+
+    // Verify it is true when shard_a is healthy
+    assert!(client.get_watchlist_status(&wallet));
+
+    // Mark shard_a unhealthy; shard_b is not watchlisted
+    client.set_shard_health(&shard_a_id, &false);
+
+    // Should skip shard_a and return false
+    assert!(!client.get_watchlist_status(&wallet));
+}
+
+#[test]
+fn test_get_watchlist_status_skips_unhealthy_and_returns_true_from_healthy() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let agg_id = env.register_contract(None, ScoreGateAggregator);
+    let client = ScoreGateAggregatorClient::new(&env, &agg_id);
+    let admin = Address::generate(&env);
+    let (shard_a_id, _) = setup_score_shard(&env);
+    let (shard_b_id, shard_b_client) = setup_score_shard(&env);
+
+    client.initialize(&admin);
+    client.add_shard(&shard_a_id);
+    client.add_shard(&shard_b_id);
+
+    let wallet = Address::generate(&env);
+    shard_b_client.set_watchlist(&soroban_sdk::Vec::new(&env), &wallet, &true);
+
+    // Mark shard_a unhealthy
+    client.set_shard_health(&shard_a_id, &false);
+
+    // Should still return true from healthy shard_b
+    assert!(client.get_watchlist_status(&wallet));
+}
+
+#[test]
 fn test_add_shard_accepts_compatible_score_contract() {
     let env = Env::default();
     env.mock_all_auths();

@@ -223,7 +223,7 @@ impl ScoreGateAggregator {
     ///
     /// Aggregation policy: watchlist is a conservative risk signal, so shard
     /// results are OR'd. A wallet is considered watchlisted if any registered
-    /// shard reports `true`.
+    /// healthy shard reports `true`. Unhealthy shards are skipped.
     ///
     /// Example:
     /// ```ignore
@@ -232,8 +232,13 @@ impl ScoreGateAggregator {
     pub fn get_watchlist_status(env: Env, wallet: Address) -> bool {
         let shards: Vec<Address> =
             env.storage().instance().get(&DataKey::Shards).unwrap_or_else(|| Vec::new(&env));
+        // #62: skip unhealthy shards so offline or crashing shards do not
+        // disable watchlist queries across the aggregator.
         for i in 0..shards.len() {
             let shard = shards.get(i).unwrap();
+            if !is_shard_healthy(&env, &shard) {
+                continue;
+            }
             let client = scoregate_score::ScoreGateScoreContractClient::new(&env, &shard);
             if let Ok(Ok(true)) = client.try_is_watchlisted(&wallet) {
                 return true;

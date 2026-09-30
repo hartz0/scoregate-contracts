@@ -8,6 +8,8 @@
 //! - **#61** — `get_decay_rate` and `get_consensus_threshold_k` hardcoded
 //!   `shards.get(0)`, so taking the primary offline broke them even when every
 //!   other shard was healthy.
+//! - **#62** — `get_watchlist_status` failed to filter out unhealthy shards,
+//!   reverting on crashing/degraded shards instead of skipping them.
 
 use crate::{ScoreGateAggregator, ScoreGateAggregatorClient};
 use scoregate_score::{ScoreGateScoreContract, ScoreGateScoreContractClient};
@@ -203,4 +205,45 @@ fn get_decay_rate_errors_when_all_shards_unhealthy() {
     }
 
     assert!(client.try_get_decay_rate().is_err());
+}
+
+// ── #62: get_watchlist_status skips unhealthy shards ───────────────────────
+
+/// #62: with the only shard watchlisting a wallet marked unhealthy,
+/// `get_watchlist_status` skips it and returns `false`.
+#[test]
+fn get_watchlist_status_skips_unhealthy_shards() {
+    let env = test_env();
+    let client = aggregator_with_shards(&env, 2);
+
+    let shards = client.get_shards();
+    let shard_a = shards.get(0).unwrap();
+    let shard_a_client = ScoreGateScoreContractClient::new(&env, &shard_a);
+
+    let wallet = Address::generate(&env);
+    shard_a_client.set_watchlist(&soroban_sdk::Vec::new(&env), &wallet, &true);
+
+    assert!(client.get_watchlist_status(&wallet));
+
+    mark_unhealthy(&env, &client, &shard_a);
+    assert!(!client.get_watchlist_status(&wallet));
+}
+
+/// #62: watchlist queries return valid results from operational shards even when
+/// another shard is unhealthy.
+#[test]
+fn get_watchlist_status_returns_true_from_healthy_shard_when_another_is_unhealthy() {
+    let env = test_env();
+    let client = aggregator_with_shards(&env, 2);
+
+    let shards = client.get_shards();
+    let shard_a = shards.get(0).unwrap();
+    let shard_b = shards.get(1).unwrap();
+    let shard_b_client = ScoreGateScoreContractClient::new(&env, &shard_b);
+
+    let wallet = Address::generate(&env);
+    shard_b_client.set_watchlist(&soroban_sdk::Vec::new(&env), &wallet, &true);
+
+    mark_unhealthy(&env, &client, &shard_a);
+    assert!(client.get_watchlist_status(&wallet));
 }
