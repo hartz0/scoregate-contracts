@@ -55,6 +55,18 @@ fi
 PREVIOUS_WASM_HASH=$(sha256sum "$PREVIOUS_WASM_PATH" | awk '{print $1}')
 log "Previous WASM SHA-256: $PREVIOUS_WASM_HASH"
 
+# ── Step 0: Install the previous WASM ─────────────────────────
+log "Step 0: Installing previous WASM binary to ledger"
+if [ "$DRY_RUN" = true ]; then
+  echo "[dry-run] soroban contract install --wasm $PREVIOUS_WASM_PATH --source $ADMIN_IDENTITY --network $NETWORK"
+else
+  INSTALL_OUTPUT=$(soroban contract install \
+    --wasm "$PREVIOUS_WASM_PATH" \
+    --source "$ADMIN_IDENTITY" \
+    --network "$NETWORK" 2>&1)
+  log "Install output: $INSTALL_OUTPUT"
+fi
+
 # ── Step 1: Propose the previous WASM ─────────────────────────
 log "Step 1: Proposing rollback upgrade (previous WASM hash)"
 if [ "$DRY_RUN" = true ]; then

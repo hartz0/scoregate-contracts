@@ -553,6 +553,7 @@ impl ScoreGateAggregator {
         if shards.is_empty() {
             return false;
         }
+        let mut consulted = 0u32;
         for i in 0..shards.len() {
             let shard = shards.get(i).unwrap();
             if !is_shard_healthy(&env, &shard) {
@@ -565,7 +566,7 @@ impl ScoreGateAggregator {
                 &gate_threshold,
                 &min_confidence,
             ) {
-                Ok(Ok(true)) => {}
+                Ok(Ok(true)) => consulted += 1,
                 Ok(Ok(false)) => return false,
                 _ => {
                     // #60: a read query must not mutate storage, so the failure is
@@ -577,7 +578,9 @@ impl ScoreGateAggregator {
                 }
             }
         }
-        true
+        // Fail closed: at least one healthy shard must have vouched for the wallet.
+        // If all shards are unhealthy/offline, gate returns false to prevent approval.
+        consulted > 0
     }
 
     /// Infallible relative (percentile-based) risk gate across all registered
@@ -769,11 +772,11 @@ impl ScoreGateAggregator {
                     out.push_back((shard.clone(), None));
                 }
                 Err(_) => {
-                    // Host trap / transport failure — record as a shard failure
-                    // so operators can detect it via get_last_shard_failure.
-                    env.storage()
-                        .instance()
-                        .set(&DataKey::LastShardFailure, &(shard.clone(), FAILURE_TRANSPORT));
+                    // #60: a read query must not mutate storage, so the failure is
+                    // reported as a diagnostic event instead of a `LastShardFailure`
+                    // write. Health is set explicitly via `set_shard_health`.
+                    env.events()
+                        .publish((symbol_short!("sh_fail"), EVENT_VERSION, shard.clone()), FAILURE_TRANSPORT);
                     out.push_back((shard.clone(), None));
                 }
             }

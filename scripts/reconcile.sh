@@ -71,12 +71,19 @@ NOW=$(date +%s)
 
 # ── Query on-chain score ──────────────────────────────────────────────────────
 # Returns JSON from get_score, or empty string on ScoreNotFound.
-# Halts with an error if contract invocation fails for any other reason.
+# Halts with an error if RPC or transport fails; does NOT treat RPC failures
+# as pipeline discrepancies.
 query_onchain() {
   local wallet="$1" pair="$2"
   local stdout_file="${TMPDIR:-/tmp}/query_out_$$.txt"
   local stderr_file="${TMPDIR:-/tmp}/query_err_$$.txt"
   local exit_code=0
+
+  # Ensure --rpc-url is set; fail if unset or empty.
+  if [[ -z "$RPC_URL" ]]; then
+    echo "Error: --rpc-url or \$RPC_URL is required for on-chain queries." >&2
+    return 1
+  fi
 
   set +e
   "$CLI" contract invoke \
@@ -104,7 +111,15 @@ query_onchain() {
     return 0
   fi
 
-  # Any other failure (RPC error, bad argument, contract not found, etc.) is reported.
+  # Distinguish RPC/transport failures from contract errors.
+  # RPC errors (connection timeout, bad request, etc.) must halt reconciliation.
+  if [[ "$stderr_content" =~ "connection" || "$stderr_content" =~ "timeout" || "$stderr_content" =~ "Connection" || "$stderr_content" =~ "Timeout" || "$stderr_content" =~ "RPC" || "$stderr_content" =~ "rpc" ]]; then
+    echo "Fatal: RPC connection error for wallet '$wallet', asset pair '$pair':" >&2
+    echo "$stderr_content" >&2
+    return 1
+  fi
+
+  # Any other failure (bad argument, contract not found, etc.) is reported.
   echo "Error: on-chain query failed for wallet '$wallet', asset pair '$pair' (exit $exit_code):" >&2
   if [[ -n "$stderr_content" ]]; then
     echo "$stderr_content" >&2
