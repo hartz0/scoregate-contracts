@@ -3763,6 +3763,18 @@ impl ScoreGateScoreContract {
                 storage::set_risk_threshold(&env, *v)
             }
             ParamValue::U32(v) if key == symbol_short!("hist_dep") => {
+                // Fix #233: Retroactively trim existing histories when max depth is reduced
+                let old_depth = storage::get_history_max_depth(&env);
+                if *v < old_depth {
+                    let index = storage::get_score_entry_index(&env);
+                    for i in 0..index.len() {
+                        let (wallet, pair) = index.get(i).unwrap();
+                        let len = storage::peek_score_history_len(&env, &wallet, &pair);
+                        if len > *v {
+                            storage::trim_score_history(&env, &wallet, &pair, *v);
+                        }
+                    }
+                }
                 storage::set_history_max_depth(&env, *v)
             }
             ParamValue::U64(v) if key == symbol_short!("upg_dly") => {
@@ -4935,7 +4947,8 @@ impl ScoreGateScoreContract {
         }
         Self::require_admin_auth(&env, &admin_signers)?;
         storage::set_dormancy_inactivity_secs(&env, secs);
-        events::dormancy_config_updated(&env, symbol_short!("inactive"), secs as u32);
+        // Fix #231: Emit the full u64 value to prevent truncation beyond 2^32-1 seconds
+        events::dormancy_config_updated(&env, symbol_short!("inactive"), secs);
         Ok(())
     }
 
@@ -9409,6 +9422,10 @@ impl ScoreGateScoreContract {
         if !storage::has_admin(&env) {
             return Err(Error::NotInitialized);
         }
+        // Fix #232: Validate asset_pair symbol length bounds before using as storage key
+        if !Self::asset_pair_is_bounded(&env, &asset_pair) {
+            return Err(Error::InvalidAssetPair);
+        }
         if !(constants::MIN_COOLDOWN_SECS..=constants::MAX_COOLDOWN_SECS).contains(&secs) {
             return Err(Error::InvalidCooldown);
         }
@@ -10464,7 +10481,10 @@ impl ScoreGateScoreContract {
         }
 
         let score_delta = (last.score as i32) - (first.score as i32);
-        let momentum = score_delta / (time_delta as i32);
+        // Fix #230: Use fixed-point arithmetic to prevent truncation for windows > 100 seconds
+        // Scale up by 1000 to preserve fractional momentum before integer division
+        let momentum_scaled = (score_delta as i64) * 1000 / (time_delta as i64);
+        let momentum = (momentum_scaled / 1000) as i32;
 
         let alert_threshold = storage::get_momentum_alert_threshold(&env);
         if alert_threshold > 0 && momentum > alert_threshold as i32 {
