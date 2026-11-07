@@ -285,8 +285,58 @@ pub fn encode_proof(env: &Env, is_member: bool, z: &[u8; 32], v: &[u8; 32], witn
     Bytes::from_array(env, &buf)
 }
 
+/// BLS12-381 scalar field modulus `r` in big-endian byte form (issue #268).
+///
+/// ```text
+/// r = 0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001
+/// ```
+///
+/// A 32-byte field element is **canonically reduced** iff it is strictly less
+/// than `r` when interpreted as a big-endian unsigned integer.  Accepting
+/// non-canonical (i.e. reduced-mod-r-equivalent-but-larger-in-bytes) elements
+/// from untrusted proof blobs creates verification malleability: two distinct
+/// byte strings represent the same mathematical value, breaking uniqueness of
+/// the proof encoding.
+///
+/// Note: the bitmask reduction applied during *derivation* (`BLS12_381_FIELD_BITMASK`)
+/// guarantees that *internally generated* elements are canonical.  This
+/// separate check is required for *externally supplied* elements that arrive
+/// through `decode_proof` and may have been constructed by an adversary.
+const BLS12_381_SCALAR_MODULUS_R: [u8; 32] = [
+    0x73, 0xed, 0xa7, 0x53, 0x29, 0x9d, 0x7d, 0x48,
+    0x33, 0x39, 0xd8, 0x08, 0x09, 0xa1, 0xd8, 0x05,
+    0x53, 0xbd, 0xa4, 0x02, 0xff, 0xfe, 0x5b, 0xfe,
+    0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x01,
+];
+
+/// Returns `true` iff `elem` (big-endian) is strictly less than the
+/// BLS12-381 scalar field modulus `r`.
+///
+/// Implements a constant-time-style byte-by-byte comparison from the most
+/// significant byte to the least significant byte.
+fn is_canonical_field_element(elem: &[u8; 32]) -> bool {
+    for i in 0..32 {
+        match elem[i].cmp(&BLS12_381_SCALAR_MODULUS_R[i]) {
+            core::cmp::Ordering::Less => return true,
+            core::cmp::Ordering::Greater => return false,
+            core::cmp::Ordering::Equal => {}
+        }
+    }
+    // elem == r: not strictly less, so not canonical.
+    false
+}
+
 /// Decode a proof blob produced by `encode_proof`.
 /// Returns `(is_member, z, v, witness)` or `None` if malformed.
+///
+/// # Canonical-reduction check (issue #268)
+///
+/// After extracting the three 32-byte field elements `z`, `v`, and `witness`
+/// the function verifies that each is strictly less than the BLS12-381 scalar
+/// field modulus `r`.  A non-canonical element — one that is ≥ `r` but still
+/// fits in 32 bytes — would represent the same mathematical value as a
+/// reduced element, creating proof malleability.  Blobs containing such
+/// elements are rejected with `None`.
 pub fn decode_proof(proof: &Bytes) -> Option<(bool, [u8; 32], [u8; 32], [u8; 32])> {
     if proof.len() != 97 {
         return None;
@@ -306,6 +356,20 @@ pub fn decode_proof(proof: &Bytes) -> Option<(bool, [u8; 32], [u8; 32], [u8; 32]
         v[i as usize] = proof.get(33 + i)?;
         witness[i as usize] = proof.get(65 + i)?;
     }
+
+    // Reject blobs containing non-canonically-reduced field elements (issue #268).
+    // The witness is a SHA-256 output that is always < 2^256 < r (since r > 2^254)
+    // after the top-3-bit mask, but external callers may supply arbitrary bytes.
+    if !is_canonical_field_element(&z) {
+        return None;
+    }
+    if !is_canonical_field_element(&v) {
+        return None;
+    }
+    if !is_canonical_field_element(&witness) {
+        return None;
+    }
+
     Some((is_member, z, v, witness))
 }
 

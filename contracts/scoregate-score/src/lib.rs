@@ -277,6 +277,9 @@ mod test_bayesian;
 mod test_decay;
 
 #[cfg(test)]
+mod test_decay_differential;
+
+#[cfg(test)]
 mod test_storage;
 
 use soroban_sdk::{

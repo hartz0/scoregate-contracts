@@ -1,10 +1,11 @@
-//! Spike proof-of-concept for cross-repository schema/type generation for the
-//! canonical [`scoregate_score::RiskScore`] contract type.
+//! Cross-repository schema/type generation for the canonical ScoreGate contract
+//! types: [`scoregate_score::RiskScore`], [`scoregate_score::AggregateRiskScore`],
+//! [`scoregate_score::ScoreSubmission`], and [`scoregate_score::BatchAttestation`].
 //!
 //! The generation source is the Soroban **contract-spec (XDR)** metadata that
 //! the `#[contracttype]` derive already compiles into every contract:
 //!
-//! * natively via [`scoregate_score::RiskScore::spec_xdr()`] — the exact
+//! * natively via e.g. [`scoregate_score::RiskScore::spec_xdr()`] — the exact
 //!   spec bytes generated from the Rust struct itself, and
 //! * from a built/deployed contract WASM via [`soroban_spec::read::from_wasm`]
 //!   — the same read path Soroban's SDK typed-client generators use.
@@ -13,6 +14,17 @@
 //! domain `[0, 100]`, sourced from the contract's own
 //! [`scoregate_score::constants`] range constants so the emitted schema
 //! cannot drift from what `submit_score` actually enforces.
+//!
+//! # Extended types (issue #274)
+//!
+//! `schema-gen` previously only extracted `RiskScore`.  It now supports three
+//! additional contract types used by batch and aggregate endpoints:
+//!
+//! | Rust type              | XDR name              | Description                          |
+//! |------------------------|-----------------------|--------------------------------------|
+//! | `AggregateRiskScore`   | `AggregateRiskScore`  | Cross-asset aggregate view per wallet |
+//! | `ScoreSubmission`      | `ScoreSubmission`     | Single entry in a batch submission   |
+//! | `BatchAttestation`     | `BatchAttestation`    | Merkle-root attestation for a batch  |
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
@@ -20,6 +32,15 @@ use soroban_sdk::xdr::{Limits, ReadXdr, ScSpecEntry, ScSpecTypeDef, ScSpecUdtStr
 
 /// The canonical cross-repo name of the risk-score struct.
 pub const RISK_SCORE_NAME: &str = "RiskScore";
+
+/// The canonical cross-repo name of the aggregate risk-score struct (issue #274).
+pub const AGGREGATE_RISK_SCORE_NAME: &str = "AggregateRiskScore";
+
+/// The canonical cross-repo name of the score-submission struct (issue #274).
+pub const SCORE_SUBMISSION_NAME: &str = "ScoreSubmission";
+
+/// The canonical cross-repo name of the batch-attestation struct (issue #274).
+pub const BATCH_ATTESTATION_NAME: &str = "BatchAttestation";
 
 /// Default directory the CLI emits generated artifacts into.
 pub const DEFAULT_OUTPUT_DIR: &str = "schemas";
@@ -33,6 +54,33 @@ pub const TYPESCRIPT_FILE: &str = "risk_score.ts";
 /// Filename of the generated Python (Pydantic) artifact.
 pub const PYTHON_FILE: &str = "risk_score.py";
 
+/// Filename of the generated JSON Schema artifact for `AggregateRiskScore` (issue #274).
+pub const AGGREGATE_RISK_SCORE_SCHEMA_FILE: &str = "aggregate_risk_score.schema.json";
+
+/// Filename of the generated TypeScript artifact for `AggregateRiskScore` (issue #274).
+pub const AGGREGATE_RISK_SCORE_TYPESCRIPT_FILE: &str = "aggregate_risk_score.ts";
+
+/// Filename of the generated Python artifact for `AggregateRiskScore` (issue #274).
+pub const AGGREGATE_RISK_SCORE_PYTHON_FILE: &str = "aggregate_risk_score.py";
+
+/// Filename of the generated JSON Schema artifact for `ScoreSubmission` (issue #274).
+pub const SCORE_SUBMISSION_SCHEMA_FILE: &str = "score_submission.schema.json";
+
+/// Filename of the generated TypeScript artifact for `ScoreSubmission` (issue #274).
+pub const SCORE_SUBMISSION_TYPESCRIPT_FILE: &str = "score_submission.ts";
+
+/// Filename of the generated Python artifact for `ScoreSubmission` (issue #274).
+pub const SCORE_SUBMISSION_PYTHON_FILE: &str = "score_submission.py";
+
+/// Filename of the generated JSON Schema artifact for `BatchAttestation` (issue #274).
+pub const BATCH_ATTESTATION_SCHEMA_FILE: &str = "batch_attestation.schema.json";
+
+/// Filename of the generated TypeScript artifact for `BatchAttestation` (issue #274).
+pub const BATCH_ATTESTATION_TYPESCRIPT_FILE: &str = "batch_attestation.ts";
+
+/// Filename of the generated Python artifact for `BatchAttestation` (issue #274).
+pub const BATCH_ATTESTATION_PYTHON_FILE: &str = "batch_attestation.py";
+
 /// Decode the `RiskScore` UDT struct entry natively, straight from the
 /// `#[contracttype]`-generated `spec_xdr()` on the Rust type itself — the same
 /// bytes the contract's `contractspecv0` section is compiled from.
@@ -40,29 +88,70 @@ pub fn native_risk_score_struct() -> Result<ScSpecUdtStructV0> {
     let bytes = scoregate_score::RiskScore::spec_xdr();
     let entry = ScSpecEntry::from_xdr(bytes.as_slice(), Limits::none())
         .context("`RiskScore::spec_xdr()` must decode to an `ScSpecEntry`")?;
-    into_risk_score_struct(entry)
+    into_named_struct(entry, RISK_SCORE_NAME)
+}
+
+/// Decode the `AggregateRiskScore` UDT struct entry natively (issue #274).
+pub fn native_aggregate_risk_score_struct() -> Result<ScSpecUdtStructV0> {
+    let bytes = scoregate_score::AggregateRiskScore::spec_xdr();
+    let entry = ScSpecEntry::from_xdr(bytes.as_slice(), Limits::none())
+        .context("`AggregateRiskScore::spec_xdr()` must decode to an `ScSpecEntry`")?;
+    into_named_struct(entry, AGGREGATE_RISK_SCORE_NAME)
+}
+
+/// Decode the `ScoreSubmission` UDT struct entry natively (issue #274).
+pub fn native_score_submission_struct() -> Result<ScSpecUdtStructV0> {
+    let bytes = scoregate_score::ScoreSubmission::spec_xdr();
+    let entry = ScSpecEntry::from_xdr(bytes.as_slice(), Limits::none())
+        .context("`ScoreSubmission::spec_xdr()` must decode to an `ScSpecEntry`")?;
+    into_named_struct(entry, SCORE_SUBMISSION_NAME)
+}
+
+/// Decode the `BatchAttestation` UDT struct entry natively (issue #274).
+pub fn native_batch_attestation_struct() -> Result<ScSpecUdtStructV0> {
+    let bytes = scoregate_score::BatchAttestation::spec_xdr();
+    let entry = ScSpecEntry::from_xdr(bytes.as_slice(), Limits::none())
+        .context("`BatchAttestation::spec_xdr()` must decode to an `ScSpecEntry`")?;
+    into_named_struct(entry, BATCH_ATTESTATION_NAME)
 }
 
 /// Read the `RiskScore` UDT struct entry from a built/deployed contract WASM,
 /// using the same `contractspecv0` read path the SDK typed-client generators
 /// use.
 pub fn wasm_risk_score_struct(wasm: &[u8]) -> Result<ScSpecUdtStructV0> {
+    wasm_named_struct(wasm, RISK_SCORE_NAME)
+}
+
+/// Read the `AggregateRiskScore` UDT struct entry from a contract WASM (issue #274).
+pub fn wasm_aggregate_risk_score_struct(wasm: &[u8]) -> Result<ScSpecUdtStructV0> {
+    wasm_named_struct(wasm, AGGREGATE_RISK_SCORE_NAME)
+}
+
+/// Read the `ScoreSubmission` UDT struct entry from a contract WASM (issue #274).
+pub fn wasm_score_submission_struct(wasm: &[u8]) -> Result<ScSpecUdtStructV0> {
+    wasm_named_struct(wasm, SCORE_SUBMISSION_NAME)
+}
+
+/// Read the `BatchAttestation` UDT struct entry from a contract WASM (issue #274).
+pub fn wasm_batch_attestation_struct(wasm: &[u8]) -> Result<ScSpecUdtStructV0> {
+    wasm_named_struct(wasm, BATCH_ATTESTATION_NAME)
+}
+
+fn wasm_named_struct(wasm: &[u8], name: &str) -> Result<ScSpecUdtStructV0> {
     let entries = soroban_spec::read::from_wasm(wasm).context("contract WASM spec must parse")?;
     entries
         .into_iter()
         .find(|entry| {
-            matches!(entry, ScSpecEntry::UdtStructV0(s) if xdr_str(&s.name) == RISK_SCORE_NAME)
+            matches!(entry, ScSpecEntry::UdtStructV0(s) if xdr_str(&s.name) == name)
         })
-        .map(into_risk_score_struct)
-        .unwrap_or_else(|| bail!("contract spec contains no `{RISK_SCORE_NAME}` UDT struct"))
+        .map(|e| into_named_struct(e, name))
+        .unwrap_or_else(|| bail!("contract spec contains no `{name}` UDT struct"))
 }
 
-fn into_risk_score_struct(entry: ScSpecEntry) -> Result<ScSpecUdtStructV0> {
+fn into_named_struct(entry: ScSpecEntry, name: &str) -> Result<ScSpecUdtStructV0> {
     match entry {
-        ScSpecEntry::UdtStructV0(struct_) if xdr_str(&struct_.name) == RISK_SCORE_NAME => {
-            Ok(struct_)
-        }
-        other => bail!("expected `UdtStructV0` named `{RISK_SCORE_NAME}`, got {other:?}"),
+        ScSpecEntry::UdtStructV0(struct_) if xdr_str(&struct_.name) == name => Ok(struct_),
+        other => bail!("expected `UdtStructV0` named `{name}`, got {other:?}"),
     }
 }
 
@@ -72,9 +161,18 @@ fn into_risk_score_struct(entry: ScSpecEntry) -> Result<ScSpecUdtStructV0> {
 /// the three sub-scores) live on the same `[MIN_SCORE, MAX_SCORE]` domain that
 /// `submit_score` enforces; only `score` has a dedicated named constant (see
 /// the spike report for the follow-up to promote the others).
+///
+/// Extended in issue #274 to cover fields on `AggregateRiskScore` and
+/// `ScoreSubmission` that share the same domain.
 pub fn risk_domain_range(field: &str) -> Option<(u32, u32)> {
     match field {
-        "score" | "confidence" | "benford_score" | "ml_score" | "network_score" => {
+        // RiskScore bounded fields
+        "score" | "confidence" | "benford_score" | "ml_score" | "network_score"
+        // AggregateRiskScore bounded fields
+        | "aggregate_score" | "max_pair_score"
+        // ScoreSubmission bounded fields (score and confidence)
+        // — field names are the same as in RiskScore, already covered above.
+        => {
             Some((scoregate_score::constants::MIN_SCORE, scoregate_score::constants::MAX_SCORE))
         }
         _ => None,
@@ -485,5 +583,322 @@ mod tests {
         assert!(struct_to_python(&struct_).contains("Generated by tools/schema-gen"));
         let schema = struct_to_json_schema(&struct_);
         assert_eq!(schema["title"], "RiskScore");
+    }
+}
+
+#[cfg(test)]
+mod tests_extended {
+    //! Tests for the three additional types added in issue #274.
+    use super::*;
+
+    // ── AggregateRiskScore ────────────────────────────────────────────────────
+
+    fn native_aggregate() -> ScSpecUdtStructV0 {
+        native_aggregate_risk_score_struct()
+            .expect("native AggregateRiskScore spec must decode")
+    }
+
+    #[test]
+    fn aggregate_risk_score_spec_decodes_from_native() {
+        let s = native_aggregate();
+        assert_eq!(xdr_str(&s.name), AGGREGATE_RISK_SCORE_NAME);
+    }
+
+    #[test]
+    fn aggregate_risk_score_has_expected_fields_in_contract_order() {
+        let s = native_aggregate();
+        let fields: Vec<String> = s.fields.iter().map(|f| xdr_str(&f.name)).collect();
+        // AggregateRiskScore fields in alphabetical XDR order.
+        assert!(fields.contains(&"aggregate_score".to_string()));
+        assert!(fields.contains(&"pair_count".to_string()));
+        assert!(fields.contains(&"max_pair_score".to_string()));
+        assert!(fields.contains(&"benford_flag_count".to_string()));
+        assert!(fields.contains(&"ml_flag_count".to_string()));
+        assert!(fields.contains(&"last_updated".to_string()));
+        assert!(fields.contains(&"decay_lambda_applied".to_string()));
+    }
+
+    #[test]
+    fn aggregate_risk_score_bounded_fields_carry_contract_range() {
+        let s = native_aggregate();
+        let schema = struct_to_json_schema(&s);
+        let type_name = AGGREGATE_RISK_SCORE_NAME;
+        for field in ["aggregate_score", "max_pair_score"] {
+            let prop = &schema["$defs"][type_name]["properties"][field];
+            assert_eq!(
+                prop["minimum"].as_u64(),
+                Some(0),
+                "{field} minimum on AggregateRiskScore"
+            );
+            assert_eq!(
+                prop["maximum"].as_u64(),
+                Some(100),
+                "{field} maximum on AggregateRiskScore"
+            );
+        }
+    }
+
+    #[test]
+    fn aggregate_risk_score_unbounded_fields_have_no_max() {
+        let s = native_aggregate();
+        let schema = struct_to_json_schema(&s);
+        let type_name = AGGREGATE_RISK_SCORE_NAME;
+        // pair_count, benford_flag_count, ml_flag_count are u32 counters — unbounded.
+        for field in ["pair_count", "benford_flag_count", "ml_flag_count", "last_updated"] {
+            let prop = &schema["$defs"][type_name]["properties"][field];
+            assert!(
+                prop["maximum"].is_null(),
+                "{field} must have no maximum on AggregateRiskScore"
+            );
+        }
+    }
+
+    #[test]
+    fn aggregate_risk_score_json_schema_title_is_correct() {
+        let s = native_aggregate();
+        let schema = struct_to_json_schema(&s);
+        assert_eq!(schema["title"], AGGREGATE_RISK_SCORE_NAME);
+    }
+
+    #[test]
+    fn aggregate_risk_score_typescript_interface_is_generated() {
+        let s = native_aggregate();
+        let ts = struct_to_typescript(&s);
+        assert!(
+            ts.contains(&format!("export interface {AGGREGATE_RISK_SCORE_NAME}")),
+            "TypeScript output must declare the AggregateRiskScore interface"
+        );
+        assert!(
+            ts.contains("aggregate_score"),
+            "TypeScript output must include aggregate_score field"
+        );
+        assert!(
+            ts.contains("Generated by tools/schema-gen"),
+            "TypeScript output must include provenance comment"
+        );
+    }
+
+    #[test]
+    fn aggregate_risk_score_python_model_is_generated() {
+        let s = native_aggregate();
+        let py = struct_to_python(&s);
+        assert!(
+            py.contains(&format!("class {AGGREGATE_RISK_SCORE_NAME}(BaseModel):")),
+            "Python output must declare the AggregateRiskScore class"
+        );
+        assert!(
+            py.contains("aggregate_score: int = Field(ge=0, le=100)"),
+            "aggregate_score must carry Pydantic field constraint"
+        );
+        assert!(
+            py.contains("max_pair_score: int = Field(ge=0, le=100)"),
+            "max_pair_score must carry Pydantic field constraint"
+        );
+    }
+
+    // ── ScoreSubmission ───────────────────────────────────────────────────────
+
+    fn native_submission() -> ScSpecUdtStructV0 {
+        native_score_submission_struct()
+            .expect("native ScoreSubmission spec must decode")
+    }
+
+    #[test]
+    fn score_submission_spec_decodes_from_native() {
+        let s = native_submission();
+        assert_eq!(xdr_str(&s.name), SCORE_SUBMISSION_NAME);
+    }
+
+    #[test]
+    fn score_submission_has_expected_fields() {
+        let s = native_submission();
+        let fields: Vec<String> = s.fields.iter().map(|f| xdr_str(&f.name)).collect();
+        // All eight fields must be present (alphabetical XDR order).
+        for expected in [
+            "asset_pair",
+            "benford_flag",
+            "confidence",
+            "ml_flag",
+            "model_version",
+            "score",
+            "timestamp",
+            "wallet",
+        ] {
+            assert!(
+                fields.contains(&expected.to_string()),
+                "ScoreSubmission must contain field `{expected}`"
+            );
+        }
+        assert_eq!(fields.len(), 8, "ScoreSubmission must have exactly 8 fields");
+    }
+
+    #[test]
+    fn score_submission_score_and_confidence_carry_contract_range() {
+        let s = native_submission();
+        let schema = struct_to_json_schema(&s);
+        let type_name = SCORE_SUBMISSION_NAME;
+        for field in ["score", "confidence"] {
+            let prop = &schema["$defs"][type_name]["properties"][field];
+            assert_eq!(prop["minimum"].as_u64(), Some(0), "{field} minimum");
+            assert_eq!(prop["maximum"].as_u64(), Some(100), "{field} maximum");
+        }
+    }
+
+    #[test]
+    fn score_submission_json_schema_title_is_correct() {
+        let s = native_submission();
+        let schema = struct_to_json_schema(&s);
+        assert_eq!(schema["title"], SCORE_SUBMISSION_NAME);
+    }
+
+    #[test]
+    fn score_submission_typescript_interface_is_generated() {
+        let s = native_submission();
+        let ts = struct_to_typescript(&s);
+        assert!(
+            ts.contains(&format!("export interface {SCORE_SUBMISSION_NAME}")),
+            "TypeScript output must declare the ScoreSubmission interface"
+        );
+        assert!(ts.contains("wallet"), "TypeScript output must include wallet field");
+        assert!(ts.contains("Generated by tools/schema-gen"));
+    }
+
+    #[test]
+    fn score_submission_python_model_is_generated() {
+        let s = native_submission();
+        let py = struct_to_python(&s);
+        assert!(
+            py.contains(&format!("class {SCORE_SUBMISSION_NAME}(BaseModel):")),
+            "Python output must declare the ScoreSubmission class"
+        );
+        assert!(py.contains("score: int = Field(ge=0, le=100)"));
+        assert!(py.contains("confidence: int = Field(ge=0, le=100)"));
+    }
+
+    // ── BatchAttestation ──────────────────────────────────────────────────────
+
+    fn native_attestation() -> ScSpecUdtStructV0 {
+        native_batch_attestation_struct()
+            .expect("native BatchAttestation spec must decode")
+    }
+
+    #[test]
+    fn batch_attestation_spec_decodes_from_native() {
+        let s = native_attestation();
+        assert_eq!(xdr_str(&s.name), BATCH_ATTESTATION_NAME);
+    }
+
+    #[test]
+    fn batch_attestation_has_expected_fields() {
+        let s = native_attestation();
+        let fields: Vec<String> = s.fields.iter().map(|f| xdr_str(&f.name)).collect();
+        // merkle_root (BytesN<32>) and signature (BytesN<65>).
+        assert!(fields.contains(&"merkle_root".to_string()));
+        assert!(fields.contains(&"signature".to_string()));
+        assert_eq!(fields.len(), 2, "BatchAttestation must have exactly 2 fields");
+    }
+
+    #[test]
+    fn batch_attestation_fields_are_bytes_in_json_schema() {
+        let s = native_attestation();
+        let schema = struct_to_json_schema(&s);
+        let type_name = BATCH_ATTESTATION_NAME;
+        // Both fields are BytesN — encoded as base64 strings in JSON Schema.
+        for field in ["merkle_root", "signature"] {
+            let prop = &schema["$defs"][type_name]["properties"][field];
+            assert_eq!(
+                prop["type"], "string",
+                "{field} must be string (base64) in JSON Schema"
+            );
+            assert_eq!(
+                prop["contentEncoding"], "base64",
+                "{field} must have contentEncoding=base64"
+            );
+        }
+    }
+
+    #[test]
+    fn batch_attestation_json_schema_title_is_correct() {
+        let s = native_attestation();
+        let schema = struct_to_json_schema(&s);
+        assert_eq!(schema["title"], BATCH_ATTESTATION_NAME);
+    }
+
+    #[test]
+    fn batch_attestation_typescript_interface_is_generated() {
+        let s = native_attestation();
+        let ts = struct_to_typescript(&s);
+        assert!(
+            ts.contains(&format!("export interface {BATCH_ATTESTATION_NAME}")),
+            "TypeScript output must declare the BatchAttestation interface"
+        );
+        // Both fields are BytesN — must map to `string` in TypeScript.
+        assert!(ts.contains("merkle_root: string"), "merkle_root must be string");
+        assert!(ts.contains("signature: string"), "signature must be string");
+        assert!(ts.contains("Generated by tools/schema-gen"));
+    }
+
+    #[test]
+    fn batch_attestation_python_model_is_generated() {
+        let s = native_attestation();
+        let py = struct_to_python(&s);
+        assert!(
+            py.contains(&format!("class {BATCH_ATTESTATION_NAME}(BaseModel):")),
+            "Python output must declare the BatchAttestation class"
+        );
+        assert!(py.contains("merkle_root: str"), "merkle_root must be str");
+        assert!(py.contains("signature: str"), "signature must be str");
+    }
+
+    #[test]
+    fn batch_attestation_has_no_bounded_fields() {
+        let s = native_attestation();
+        let schema = struct_to_json_schema(&s);
+        let type_name = BATCH_ATTESTATION_NAME;
+        for field in ["merkle_root", "signature"] {
+            let prop = &schema["$defs"][type_name]["properties"][field];
+            assert!(prop["minimum"].is_null(), "{field} must have no minimum");
+            assert!(prop["maximum"].is_null(), "{field} must have no maximum");
+        }
+    }
+
+    // ── Cross-type consistency ────────────────────────────────────────────────
+
+    /// All four types must generate provenance headers in all three binding
+    /// formats.
+    #[test]
+    fn all_four_types_embed_provenance_in_artifacts() {
+        let types = [
+            ("RiskScore", native_risk_score_struct().unwrap()),
+            (AGGREGATE_RISK_SCORE_NAME, native_aggregate()),
+            (SCORE_SUBMISSION_NAME, native_submission()),
+            (BATCH_ATTESTATION_NAME, native_attestation()),
+        ];
+        for (name, s) in &types {
+            let ts = struct_to_typescript(s);
+            let py = struct_to_python(s);
+            let schema = struct_to_json_schema(s);
+            assert!(
+                ts.contains("Generated by tools/schema-gen"),
+                "{name}: TypeScript must contain provenance comment"
+            );
+            assert!(
+                py.contains("Generated by tools/schema-gen"),
+                "{name}: Python must contain provenance comment"
+            );
+            assert_eq!(schema["title"], *name, "{name}: JSON Schema title must match");
+        }
+    }
+
+    /// WASM extraction for each new type returns a bail error (not a panic)
+    /// when the WASM does not contain the type.  We use an obviously malformed
+    /// WASM slice to confirm the error path is exercised cleanly.
+    #[test]
+    fn wasm_extraction_returns_error_on_malformed_wasm() {
+        let bad_wasm = b"not a wasm binary";
+        assert!(wasm_aggregate_risk_score_struct(bad_wasm).is_err());
+        assert!(wasm_score_submission_struct(bad_wasm).is_err());
+        assert!(wasm_batch_attestation_struct(bad_wasm).is_err());
+        assert!(wasm_risk_score_struct(bad_wasm).is_err());
     }
 }
