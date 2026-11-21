@@ -72,9 +72,8 @@ jobs:
       # This is the artifact that gets deployed and published.
       - name: Sign optimized WASM (SHA-256 manifest)
         run: |
-          OPT_WASM=target/wasm32-unknown-unknown/release/scoregate_score.optimized.wasm
-          MANIFEST=target/scoregate_score.optimized.wasm.sha256
-          sha256sum "$OPT_WASM" > "$MANIFEST"
+          MANIFEST="$PWD/target/scoregate_score.optimized.wasm.sha256"
+          (cd target/wasm32-unknown-unknown/release && sha256sum scoregate_score.optimized.wasm) > "$MANIFEST"
           echo "Manifest written:"
           cat "$MANIFEST"
 
@@ -83,8 +82,8 @@ jobs:
       # workflow stops before publish-release can run.
       - name: Verify optimized WASM against manifest
         run: |
-          MANIFEST=target/scoregate_score.optimized.wasm.sha256
-          sha256sum --check "$MANIFEST"
+          MANIFEST="$PWD/target/scoregate_score.optimized.wasm.sha256"
+          (cd target/wasm32-unknown-unknown/release && sha256sum --check "$MANIFEST")
           echo "OK: Optimized WASM artifact integrity verified."
 
       # ── Upload artifacts for publish-release job ──────────────────────────────
