@@ -5,11 +5,13 @@ VERIFY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$VERIFY_DIR/.." && pwd)"
 
 DRY_RUN=false
+SKIP_SMOKE=false
 POSITIONAL=()
 
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=true ;;
+    --skip-smoke) SKIP_SMOKE=true ;;
     --help)
       sed -n '3,15p' "$0"
       exit 0
@@ -34,6 +36,13 @@ log() {
 PASS=0
 FAIL=0
 WARN=0
+SKIPPED=0
+
+# fail_check <label> <detail>: record a failed check with the reason.
+fail_check() {
+  log "  FAIL: $1 ($2)"
+  FAIL=$((FAIL + 1))
+}
 
 check() {
   local label="$1"
@@ -128,46 +137,64 @@ echo ""
 # ── 2. Functional smoke tests ──────────────────────────
 log "2. Functional smoke tests"
 
-TEST_WALLET="TEST_WALLET_SMOKE"
-TEST_PAIR="SMOKE_TEST_PAIR"
-TEST_TIMESTAMP=$(date +%s)
+# json_number <json> <field>: the unsigned integer value of a top-level field in the CLI's JSON
+# output (a bare or quoted number), or nothing when the field is absent or not a number.
+json_number() {
+  printf '%s' "$1" | tr -d '\n' \
+    | grep -oE "\"$2\"[[:space:]]*:[[:space:]]*\"?[0-9]+" | head -1 | grep -oE '[0-9]+$' || true
+}
 
-SUBMIT_RESULT=$(soroban contract invoke \
-  --id "$CONTRACT_ID" \
-  --source "$ADMIN_IDENTITY" \
-  --network "$NETWORK" \
-  -- \
-  submit_score \
-  --signers "[]" \
-  --wallet "$ADMIN_ADDRESS" \
-  --asset-pair "$TEST_PAIR" \
-  --score 42 \
-  --benford-flag false \
-  --ml-flag false \
-  --timestamp "$TEST_TIMESTAMP" \
-  --confidence 80 \
-  --model-version 1 \
-  --attestation-input null 2>&1 || echo "SMOKE_SUBMIT_FAILED")
-
-if echo "$SUBMIT_RESULT" | grep -q "SMOKE_SUBMIT_FAILED\|Error"; then
-  WARN=$((WARN + 1))
-  log "  WARN: Smoke test submission failed (may be expected if attestation required): $SUBMIT_RESULT"
+if [ "$SKIP_SMOKE" = true ]; then
+  SKIPPED=$((SKIPPED + 1))
+  log "  SKIPPED: functional smoke tests (--skip-smoke); the submit/read round trip was NOT verified"
 else
-  check "Smoke test score submission succeeded" "$SUBMIT_RESULT"
-fi
+  # A pair that no earlier run can have written (S + 8 hex digits of the start time, 9 characters),
+  # a timestamp from this run, and a score that is read back and compared, so a pre-existing record
+  # or unrelated output can never satisfy the round trip.
+  TEST_TIMESTAMP=$(date +%s)
+  TEST_PAIR=$(printf 'S%08x' $((TEST_TIMESTAMP % 4294967296)))
+  TEST_SCORE=42
 
-SCORE=$(soroban contract invoke \
-  --id "$CONTRACT_ID" \
-  --source "$ADMIN_IDENTITY" \
-  --network "$NETWORK" \
-  -- \
-  get_score \
-  --wallet "$ADMIN_ADDRESS" \
-  --asset-pair "$TEST_PAIR" 2>/dev/null || echo "SCORE_NOT_FOUND")
-if [ "$SCORE" != "SCORE_NOT_FOUND" ] && [ "$SCORE" != "VERIFY_FAILED" ] && [ "$SCORE" != "FAIL" ]; then
-  check "Smoke test score is retrievable" "$SCORE"
-else
-  check "Smoke test score is retrievable" "FAIL"
+  if SUBMIT_RESULT=$(soroban contract invoke \
+    --id "$CONTRACT_ID" \
+    --source "$ADMIN_IDENTITY" \
+    --network "$NETWORK" \
+    -- \
+    submit_score \
+    --signers "[]" \
+    --wallet "$ADMIN_ADDRESS" \
+    --asset-pair "$TEST_PAIR" \
+    --score "$TEST_SCORE" \
+    --benford-flag false \
+    --ml-flag false \
+    --timestamp "$TEST_TIMESTAMP" \
+    --confidence 80 \
+    --model-version 1 \
+    --attestation-input null 2>&1); then
+    check "Smoke test score submission succeeded" "submitted"
+    if SCORE_JSON=$(soroban contract invoke \
+      --id "$CONTRACT_ID" \
+      --source "$ADMIN_IDENTITY" \
+      --network "$NETWORK" \
+      -- \
+      get_score \
+      --wallet "$ADMIN_ADDRESS" \
+      --asset-pair "$TEST_PAIR" 2>/dev/null); then
+      READ_SCORE=$(json_number "$SCORE_JSON" score)
+      READ_TIMESTAMP=$(json_number "$SCORE_JSON" timestamp)
+      if [ "$READ_SCORE" = "$TEST_SCORE" ] && [ "$READ_TIMESTAMP" = "$TEST_TIMESTAMP" ]; then
+        check "Smoke test round trip returned the submitted score and timestamp" "matched"
+      else
+        fail_check "Smoke test round trip" "submitted score $TEST_SCORE at $TEST_TIMESTAMP, read score '${READ_SCORE:-none}' at '${READ_TIMESTAMP:-none}'"
+      fi
+    else
+      fail_check "Smoke test round trip" "get_score failed for the pair just submitted"
+    fi
+  else
+    # Attestation-enforcing deployments reject an unsigned submission; that is a failed smoke test,
+    # not a warning. Use --skip-smoke to run the other checks without it.
+    fail_check "Smoke test score submission" "submit_score failed: $SUBMIT_RESULT"
+  fi
 fi
 
 echo ""
@@ -220,6 +247,7 @@ log "── Verification Summary ──"
 log "PASS: $PASS"
 log "FAIL: $FAIL"
 log "WARN: $WARN"
+log "SKIPPED: $SKIPPED"
 
 if [ "$FAIL" -gt 0 ]; then
   log "STATUS: FAILED — $FAIL check(s) failed"
