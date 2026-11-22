@@ -44,6 +44,145 @@ echo "  ║  Contract: $CONTRACT_ID"
 echo "  ╚══════════════════════════════════════════════════╝"
 echo ""
 
+# ── Replay-attack drill helpers ──────────────────────────────────────────────
+# The replay-attack scenario submits real signed attestations and asserts on the contract's own error
+# code, so a failure for any other reason (cooldown, pause, bad signature) is never counted as
+# evidence. It needs an isolated contract with attestation enabled (`set_service_pubkey`).
+
+DRILL_FAILED=false
+drill_fail() { echo "  FAIL: $*" >&2; DRILL_FAILED=true; }
+
+# The nonce check rejects with `InvalidAttestation` (error 27, see docs/errors.md).
+NONCE_REPLAY_ERROR="Error(Contract, #27)"
+
+# view_value <function>: print a view call's result with one pair of surrounding double quotes
+# removed; the exit status is the call's own.
+view_value() {
+  local out
+  out=$(soroban contract invoke \
+    --id "$CONTRACT_ID" \
+    --source "$ADMIN_IDENTITY" \
+    --network "$NETWORK" \
+    -- \
+    "$@" 2>/dev/null) || return 1
+  out="${out#\"}"
+  out="${out%\"}"
+  printf '%s\n' "$out"
+}
+
+# build_fixture <pair> <nonce> <timestamp>: the signed ScoreAttestationInput for one submission.
+build_fixture() {
+  "${PYTHON:-python3}" "$INJECT_DIR/build_attestation_fixture.py" \
+    --contract "$CONTRACT_ID" \
+    --wallet "$ADMIN_ADDRESS" \
+    --pair "$1" \
+    --score 50 \
+    --timestamp "$3" \
+    --confidence 80 \
+    --model-version 1 \
+    --contract-version "$CONTRACT_VERSION" \
+    --nonce "$2" \
+    --network "${ATTESTATION_NETWORK:-$NETWORK}"
+}
+
+# submit_attested <pair> <timestamp> <fixture>: submit once and keep the exit status and the
+# combined output in ATT_OK and ATT_OUT.
+submit_attested() {
+  if ATT_OUT=$(soroban contract invoke \
+    --id "$CONTRACT_ID" \
+    --source "$ADMIN_IDENTITY" \
+    --network "$NETWORK" \
+    -- \
+    submit_score \
+    --signers "[]" \
+    --wallet "$ADMIN_ADDRESS" \
+    --asset-pair "$1" \
+    --score 50 \
+    --benford-flag false \
+    --ml-flag false \
+    --timestamp "$2" \
+    --confidence 80 \
+    --model-version 1 \
+    --attestation-input "$3" 2>&1); then
+    ATT_OK=true
+  else
+    ATT_OK=false
+  fi
+}
+
+replay_attack_drill() {
+  local pair="INJ_TEST" control_pair="INJ_TEST2" nonce="${ATTESTATION_NONCE:-0}"
+  local ts fixture control_fixture registered pubkeys
+
+  if [ "$DRY_RUN" = true ]; then
+    echo "[dry-run] read get_version and get_service_pubkey; check the signing key matches it"
+    echo "[dry-run] build_attestation_fixture.py --pair $pair --nonce $nonce   # signed attestation"
+    echo "[dry-run] soroban contract invoke --id $CONTRACT_ID -- submit_score ... --attestation-input <fixture>   # must succeed"
+    echo "[dry-run] the same submit_score with the same <fixture>   # must fail with $NONCE_REPLAY_ERROR"
+    echo "[dry-run] build_attestation_fixture.py --pair $control_pair --nonce $((nonce + 1))   # control"
+    echo "[dry-run] submit_score with the control fixture   # must succeed: the stored nonce advanced"
+    return 0
+  fi
+
+  if [ -z "${ATTESTATION_SIGNING_KEY_FILE:-}" ]; then
+    echo "ERROR: ATTESTATION_SIGNING_KEY_FILE must name the signing key (64 hex characters) matching the service pubkey." >&2
+    exit 1
+  fi
+  if ! [[ "$nonce" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: ATTESTATION_NONCE must be the service signer's current nonce, an unsigned integer." >&2
+    exit 1
+  fi
+  if ! CONTRACT_VERSION=$(view_value get_version) || ! [[ "$CONTRACT_VERSION" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: could not read get_version; nothing was submitted." >&2
+    exit 1
+  fi
+  if ! registered=$(view_value get_service_pubkey); then
+    echo "ERROR: no service pubkey is registered, so attestation is not enforced and a replay would not be rejected. Run this drill on an isolated contract after set_service_pubkey." >&2
+    exit 1
+  fi
+  if ! pubkeys=$("${PYTHON:-python3}" "$INJECT_DIR/build_attestation_fixture.py" --print-pubkey) \
+    || ! printf '%s\n' "$pubkeys" | grep -qix "$registered"; then
+    echo "ERROR: the signing key does not match the registered service pubkey; nothing was submitted." >&2
+    exit 1
+  fi
+
+  ts=$(date +%s)
+  fixture=$(build_fixture "$pair" "$nonce" "$ts")
+
+  log "1. Attested submission with nonce $nonce (must succeed)"
+  submit_attested "$pair" "$ts" "$fixture"
+  if [ "$ATT_OK" != true ]; then
+    drill_fail "the first attested submission did not succeed, so the replay check proves nothing: $ATT_OUT"
+    return 0
+  fi
+  echo "  accepted"
+
+  log "2. Replaying the same signed bytes (must fail with $NONCE_REPLAY_ERROR)"
+  submit_attested "$pair" "$ts" "$fixture"
+  if [ "$ATT_OK" = true ]; then
+    drill_fail "the replayed attestation was ACCEPTED; nonce $nonce was usable twice"
+    return 0
+  fi
+  if ! printf '%s' "$ATT_OUT" | grep -qF "$NONCE_REPLAY_ERROR"; then
+    drill_fail "the replay failed, but not with $NONCE_REPLAY_ERROR, so it is not evidence of nonce protection: $ATT_OUT"
+    return 0
+  fi
+  echo "  rejected with $NONCE_REPLAY_ERROR"
+
+  # The replay carried the same commitment, signature and contract version that were just accepted,
+  # so only the nonce differs from the accepted call. Confirm the stored nonce is now nonce + 1 by
+  # having the next nonce accepted.
+  log "3. Control: a fresh attestation with nonce $((nonce + 1)) (must succeed)"
+  ts=$(date +%s)
+  control_fixture=$(build_fixture "$control_pair" "$((nonce + 1))" "$ts")
+  submit_attested "$control_pair" "$ts" "$control_fixture"
+  if [ "$ATT_OK" != true ]; then
+    drill_fail "the control submission with nonce $((nonce + 1)) was rejected, so the stored nonce is not what the drill assumed (set ATTESTATION_NONCE to the signer's current nonce): $ATT_OUT"
+    return 0
+  fi
+  echo "  accepted; the nonce advanced exactly once per accepted attestation"
+}
+
 case "$SCENARIO" in
   partial-signer-loss)
     log "Scenario: Partial signer loss (reduced below threshold)"
@@ -141,47 +280,18 @@ case "$SCENARIO" in
     ;;
 
   replay-attack)
-    log "Scenario: Replay attack attempt (reusing old attestation)"
-    log "1. Submit a score with a fresh attestation nonce"
-    log "2. Attempt to replay the same score (should be rejected by cooldown)"
-    log "3. Attempt to replay the same attestation nonce (should be rejected)"
+    log "Scenario: Replay attack attempt (reusing a signed attestation nonce)"
+    log "1. Submit a score with a signed attestation carrying the signer's current nonce (must succeed)"
+    log "2. Submit the same signed bytes again (must fail with the nonce-replay error)"
+    log "3. Submit a fresh attestation with the next nonce (must succeed: the nonce advanced)"
+    log "Needs an isolated contract with attestation enabled, the signing key in"
+    log "ATTESTATION_SIGNING_KEY_FILE and, if the signer has already used nonces, ATTESTATION_NONCE."
 
-    log "Submitting initial score"
-    run soroban contract invoke \
-      --id "$CONTRACT_ID" \
-      --source "$ADMIN_IDENTITY" \
-      --network "$NETWORK" \
-      -- \
-      submit_score \
-      --signers "[]" \
-      --wallet "$ADMIN_ADDRESS" \
-      --asset-pair INJ_TEST \
-      --score 50 \
-      --benford-flag false \
-      --ml-flag false \
-      --timestamp "$(date +%s)" \
-      --confidence 80 \
-      --model-version 1 \
-      --attestation-input null 2>&1 || true
-
-    log "Immediately replaying same data (should be rejected by cooldown)"
-    run soroban contract invoke \
-      --id "$CONTRACT_ID" \
-      --source "$ADMIN_IDENTITY" \
-      --network "$NETWORK" \
-      -- \
-      submit_score \
-      --signers "[]" \
-      --wallet "$ADMIN_ADDRESS" \
-      --asset-pair INJ_TEST \
-      --score 50 \
-      --benford-flag false \
-      --ml-flag false \
-      --timestamp "$(date +%s)" \
-      --confidence 80 \
-      --model-version 1 \
-      --attestation-input null 2>&1 || true
-
+    replay_attack_drill
+    if [ "$DRILL_FAILED" = true ]; then
+      log "Scenario FAILED: replay-attack"
+      exit 1
+    fi
     log "Scenario complete: replay-attack"
     ;;
 
