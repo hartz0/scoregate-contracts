@@ -24,3 +24,6 @@ jobs:
       - name: Run replay binary
         run: |
           cargo run -p replay --manifest-path tools/replay/Cargo.toml --quiet
+      - name: Check replay results against the reviewed baseline
+        run: |
+          python3 scripts/check_replay_baselines.py
