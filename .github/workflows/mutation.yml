@@ -87,7 +87,7 @@ jobs:
         run: |
           FILTER="${{ github.event.inputs.filter }}"
           if [ -n "$FILTER" ]; then
-            cargo mutants \
+            "$GITHUB_WORKSPACE/scripts/run-mutation-shard.sh" \
               --file src/zk_range_proof.rs \
               --file src/verkle.rs \
               --file src/governance_actions.rs \
@@ -95,7 +95,7 @@ jobs:
               --output ../../../mutants-report-${{ matrix.shard }} \
               -- -- "$FILTER"
           else
-            cargo mutants \
+            "$GITHUB_WORKSPACE/scripts/run-mutation-shard.sh" \
               --file src/zk_range_proof.rs \
               --file src/verkle.rs \
               --file src/governance_actions.rs \
@@ -103,43 +103,38 @@ jobs:
               --output ../../../mutants-report-${{ matrix.shard }}
           fi
         working-directory: contracts/scoregate-score
-        continue-on-error: true
 
       # ── Shard B: upgrade governance ────────────────────────────────────────
       - name: "[shard-b] Run mutation tests — upgrade governance"
         if: matrix.shard == 'shard-b'
         run: |
-          cargo mutants \
+          "$GITHUB_WORKSPACE/scripts/run-mutation-shard.sh" \
             --profile shard-b \
             --output mutants-report-${{ matrix.shard }}
-        continue-on-error: true
 
       # ── Shard C: rate-limiting / cooldown ──────────────────────────────────
       - name: "[shard-c] Run mutation tests — rate-limiting"
         if: matrix.shard == 'shard-c'
         run: |
-          cargo mutants \
+          "$GITHUB_WORKSPACE/scripts/run-mutation-shard.sh" \
             --profile shard-c \
             --output mutants-report-${{ matrix.shard }}
-        continue-on-error: true
 
       # ── Shard D: score-submission floor ────────────────────────────────────
       - name: "[shard-d] Run mutation tests — score-submission floor"
         if: matrix.shard == 'shard-d'
         run: |
-          cargo mutants \
+          "$GITHUB_WORKSPACE/scripts/run-mutation-shard.sh" \
             --profile shard-d \
             --output mutants-report-${{ matrix.shard }}
-        continue-on-error: true
 
       # ── Shard E: full expanded scope ───────────────────────────────────────
       - name: "[shard-e] Run mutation tests — full expanded scope"
         if: matrix.shard == 'shard-e'
         run: |
-          cargo mutants \
+          "$GITHUB_WORKSPACE/scripts/run-mutation-shard.sh" \
             --profile shard-e \
             --output mutants-report-${{ matrix.shard }}
-        continue-on-error: true
 
       # ── Upload report artifact ─────────────────────────────────────────────
       - name: Upload mutation report
@@ -153,19 +148,16 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-      # ── Surface surviving mutants in the step summary ─────────────────────
-      - name: Summarise surviving mutants
+      # ── Gate the shard on its outcomes ─────────────────────────────────────
+      # Fails when outcomes.json is missing or invalid, the baseline failed, or survivors (missed
+      # mutants plus timeouts) exceed the repository variable MUTATION_MAX_SURVIVORS (default 0).
+      - name: Enforce mutation threshold
         if: always()
+        env:
+          MAX_SURVIVORS: ${{ vars.MUTATION_MAX_SURVIVORS || '0' }}
         run: |
-          REPORT="mutants-report-${{ matrix.shard }}/outcomes.json"
-          if [ -f "$REPORT" ]; then
-            SURVIVED=$(python3 -c "
-          import json
-          data = json.load(open('$REPORT'))
-          survived = [o for o in data.get('outcomes', []) if o.get('summary') == 'survived']
-          print(len(survived))
-          " 2>/dev/null || echo "unknown")
-            echo "## Shard ${{ matrix.shard }} — surviving mutants: $SURVIVED" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "## Shard ${{ matrix.shard }} — no outcomes.json found" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          set -o pipefail
+          python3 scripts/check_mutation_outcomes.py \
+            --shard "${{ matrix.shard }}" \
+            --report-dir "mutants-report-${{ matrix.shard }}" \
+            --max-survivors "$MAX_SURVIVORS" | tee -a "$GITHUB_STEP_SUMMARY"
