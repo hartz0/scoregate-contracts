@@ -27,6 +27,9 @@ jobs:
       - name: Run replay binary
         run: |
           cargo run -p replay --manifest-path tools/replay/Cargo.toml --quiet
+      - name: Check replay results against the reviewed baseline
+        run: |
+          python3 scripts/check_replay_baselines.py
       - name: Verify deterministic event evidence hashes
         run: |
           cargo run -p replay --manifest-path tools/replay/Cargo.toml --quiet > /tmp/replay-run-1.txt
