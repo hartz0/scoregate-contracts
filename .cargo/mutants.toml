@@ -34,8 +34,7 @@ include_source_files = [
 test_workspace = false
 additional_cargo_args = [
     "--package", "scoregate-score",
-    "--test", "test_zk_range_proof",
-    "--test", "test_verkle",
+    "--lib",
 ]
 timeout = 120
 
@@ -62,10 +61,7 @@ include_re = [
 test_workspace = false
 additional_cargo_args = [
     "--package", "scoregate-score",
-    "--test", "test_upgrade",
-    "--test", "test_parameter_governance",
-    "--test", "test_param_timelock",
-    "--test", "test_upgrade_multisig",
+    "--lib",
 ]
 timeout = 120
 
@@ -94,12 +90,7 @@ include_re = [
 test_workspace = false
 additional_cargo_args = [
     "--package", "scoregate-score",
-    "--test", "test_rate_limit",
-    "--test", "test_cooldown",
-    "--test", "test_cooldown_period",
-    "--test", "test_rate_limit_override_log",
-    "--test", "test_rate_limit_window",
-    "--test", "test_adaptive_rate_limit",
+    "--lib",
 ]
 timeout = 120
 
@@ -123,8 +114,7 @@ include_re = [
 test_workspace = false
 additional_cargo_args = [
     "--package", "scoregate-score",
-    "--test", "test_score_floor",
-    "--test", "test_is_score_floor_enabled",
+    "--lib",
 ]
 timeout = 120
 
@@ -173,19 +163,6 @@ include_re = [
 test_workspace = false
 additional_cargo_args = [
     "--package", "scoregate-score",
-    "--test", "test_zk_range_proof",
-    "--test", "test_verkle",
-    "--test", "test_upgrade",
-    "--test", "test_parameter_governance",
-    "--test", "test_param_timelock",
-    "--test", "test_upgrade_multisig",
-    "--test", "test_rate_limit",
-    "--test", "test_cooldown",
-    "--test", "test_cooldown_period",
-    "--test", "test_rate_limit_override_log",
-    "--test", "test_rate_limit_window",
-    "--test", "test_adaptive_rate_limit",
-    "--test", "test_score_floor",
-    "--test", "test_is_score_floor_enabled",
+    "--lib",
 ]
 timeout = 180
