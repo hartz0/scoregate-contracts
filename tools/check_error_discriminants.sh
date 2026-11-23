@@ -14,6 +14,13 @@ set -euo pipefail
 BASE_REF="${1:-origin/main}"
 HEAD_REF="${2:-HEAD}"
 
+for ref in "$BASE_REF" "$HEAD_REF"; do
+  if ! git rev-parse --verify "${ref}^{commit}" >/dev/null 2>&1; then
+    echo "ERROR: invalid git ref: ${ref}" >&2
+    exit 1
+  fi
+done
+
 # All workspace files that define #[contracterror] enums with numeric
 # discriminants. Add new contract error files here as they are introduced.
 ERRORS_PATHS=(

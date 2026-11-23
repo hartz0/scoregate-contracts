@@ -191,3 +191,32 @@ jobs:
           fi
           echo "verified-sha256=$SHA1" >> "$GITHUB_OUTPUT"
           echo "OK: WASM is reproducible across independent build directories."
+
+  publish-release:
+    name: Publish release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    needs: [reproducibility-check]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref }}
+      - name: Generate release notes
+        run: |
+          NOTES=""
+          if [ -f CHANGELOG.md ]; then
+            NOTES=$(sed -n '/^## /,/^## /p' CHANGELOG.md | head -n -1 || true)
+          fi
+          if [ -z "$NOTES" ]; then
+            PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)
+            if [ -z "$PREV_TAG" ]; then
+              echo "First release; no previous tag found." >&2
+              NOTES="Initial release."
+            else
+              NOTES=$(git log --pretty=format:'- %s' "${PREV_TAG}..HEAD" || true)
+            fi
+          fi
+          echo "$NOTES" > release_notes.md
+          cat release_notes.md
