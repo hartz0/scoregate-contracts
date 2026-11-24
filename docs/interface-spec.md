@@ -143,6 +143,7 @@ capabilities (all `symbol_short!`):
 | `export_score`  | `export_score` / `export_all_scores`                                  |
 | `freeze`        | `freeze_contract` / `unfreeze_contract`                              |
 | `arch`          | Architecture owner and mandatory-reviewer reads                       |
+| `restore`       | `restore_snapshot`                                                   |
 
 Unrecognised capabilities return `false`.
 
@@ -150,12 +151,14 @@ Unrecognised capabilities return `false`.
 
 ```rust
 fn get_interface_metadata(env: Env) -> InterfaceMetadata
+```
 
 Returns a compact, versioned description of the contract's published surface so
 consumers can discover capabilities and semantic constraints at runtime without
 hard-coding the ABI. The structure is stable across compatible upgrades within
-this interface major version, and integrators should treat it as read-only
-metadata rather than a second source of truth.
+this interface major version, and `capabilities` is backed by the same
+canonical capability list as `supports_interface` so every supported capability
+is enumerated without drift.
 
 ```rust
 #[contracttype]
@@ -165,11 +168,11 @@ pub struct InterfaceMetadata {
     pub capabilities: Vec<Symbol>,
     pub semantic_constraints: Vec<Symbol>,
 }
-```yaml
+```
 
 The metadata currently advertises the following capabilities and constraints:
 
-- Capabilities: `score`, `history`, `batch`, `gate`, `aggr`, `count`, `cgate`, `meta`
+- Capabilities: every capability recognised by `supports_interface` (`score`, `history`, `hpag`, `batch`, `gate`, `aggr`, `count`, `var`, `batch_attested`, `cgate`, `histogram`, `rgate`, `emb`, `cons`, `pr_rd`, `dprv`, `meta`, `reconcile`, `checksum`, `snapshot`, `export_score`, `freeze`, `arch`, `restore`)
 - Semantic constraints: `fail_closed`, `side_effect_free`, `bounded_score_range`
 
 The `meta` capability is reserved for this metadata surface itself; callers can

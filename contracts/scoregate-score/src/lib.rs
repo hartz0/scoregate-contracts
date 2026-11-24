@@ -415,31 +415,48 @@ impl ScoreGateScoreContract {
         storage::get_contract_version(&env)
     }
 
+    /// Returns the canonical list of capability symbols supported by this contract build.
+    ///
+    /// Shared by [`Self::get_interface_metadata`] and [`Self::supports_interface`] so
+    /// runtime metadata discovery and single-capability probing can never drift apart.
+    fn supported_capabilities(env: &Env) -> Vec<Symbol> {
+        let mut capabilities = Vec::new(env);
+        capabilities.push_back(Symbol::new(env, "score"));
+        capabilities.push_back(Symbol::new(env, "history"));
+        capabilities.push_back(Symbol::new(env, "hpag"));
+        capabilities.push_back(Symbol::new(env, "batch"));
+        capabilities.push_back(Symbol::new(env, "gate"));
+        capabilities.push_back(Symbol::new(env, "aggr"));
+        capabilities.push_back(Symbol::new(env, "count"));
+        capabilities.push_back(Symbol::new(env, "var"));
+        capabilities.push_back(Symbol::new(env, "batch_attested"));
+        capabilities.push_back(Symbol::new(env, "cgate"));
+        capabilities.push_back(Symbol::new(env, "histogram"));
+        capabilities.push_back(Symbol::new(env, "rgate"));
+        capabilities.push_back(Symbol::new(env, "emb"));
+        capabilities.push_back(Symbol::new(env, "cons"));
+        capabilities.push_back(Symbol::new(env, "pr_rd"));
+        capabilities.push_back(Symbol::new(env, "dprv"));
+        capabilities.push_back(Symbol::new(env, "meta"));
+        capabilities.push_back(Symbol::new(env, "reconcile"));
+        capabilities.push_back(Symbol::new(env, "checksum"));
+        capabilities.push_back(Symbol::new(env, "snapshot"));
+        capabilities.push_back(Symbol::new(env, "export_score"));
+        capabilities.push_back(Symbol::new(env, "freeze"));
+        capabilities.push_back(Symbol::new(env, "arch"));
+        capabilities.push_back(Symbol::new(env, "restore"));
+        capabilities
+    }
+
     /// Exposes lightweight runtime metadata for integrators and tooling.
     ///
     /// The returned metadata is intentionally compact: it advertises the
-    /// interface version, contract version, the supported capability symbols,
-    /// and the semantic constraints that callers must respect. This allows
-    /// clients to discover the published surface without hard-coding the ABI.
+    /// interface version, contract version, every supported capability symbol
+    /// accepted by [`Self::supports_interface`], and the semantic constraints
+    /// that callers must respect. This allows clients to discover the published
+    /// surface without hard-coding the ABI.
     pub fn get_interface_metadata(env: Env) -> InterfaceMetadata {
-        let mut capabilities = Vec::new(&env);
-        capabilities.push_back(Symbol::new(&env, "score"));
-        capabilities.push_back(Symbol::new(&env, "history"));
-        capabilities.push_back(Symbol::new(&env, "batch"));
-        capabilities.push_back(Symbol::new(&env, "gate"));
-        capabilities.push_back(Symbol::new(&env, "aggr"));
-        capabilities.push_back(Symbol::new(&env, "count"));
-        capabilities.push_back(Symbol::new(&env, "cgate"));
-        capabilities.push_back(Symbol::new(&env, "batch_attested"));
-        capabilities.push_back(Symbol::new(&env, "emb"));
-        capabilities.push_back(Symbol::new(&env, "cons"));
-        capabilities.push_back(Symbol::new(&env, "pr_rd"));
-        capabilities.push_back(Symbol::new(&env, "meta"));
-        capabilities.push_back(Symbol::new(&env, "reconcile"));
-        capabilities.push_back(Symbol::new(&env, "checksum"));
-        capabilities.push_back(Symbol::new(&env, "snapshot"));
-        capabilities.push_back(Symbol::new(&env, "export_score"));
-        capabilities.push_back(Symbol::new(&env, "freeze"));
+        let capabilities = Self::supported_capabilities(&env);
 
         let mut constraints = Vec::new(&env);
         constraints.push_back(Symbol::new(&env, "fail_closed"));
@@ -5767,21 +5784,28 @@ impl ScoreGateScoreContract {
     /// |------------------|----------------------------------------------------|
     /// | `score`          | `get_score` / `submit_score`                       |
     /// | `history`        | `get_score_history`                                |
+    /// | `hpag`           | paginated historical score queries                 |
     /// | `batch`          | `submit_scores_batch`                              |
     /// | `gate`           | `query_risk_gate`                                  |
     /// | `aggr`           | `get_aggregate_score` (cross-asset aggregate risk) |
     /// | `count`          | `get_score_count`                                  |
-    /// | `batch_attested` | `submit_scores_batch_attested` (Merkle-root sig)    |
+    /// | `var`            | portfolio value-at-risk / variance queries         |
+    /// | `batch_attested` | `submit_scores_batch_attested` (Merkle-root sig)   |
     /// | `cgate`          | `query_risk_gate_with_confidence` / global confidence floor |
+    /// | `histogram`      | `get_score_histogram`                              |
+    /// | `rgate`          | `query_risk_gate_relative`                         |
     /// | `emb`            | `set_score_embargo` / `lift_score_embargo`         |
     /// | `cons`           | `commit_consensus` / `reveal_consensus` / `set_consensus_config` |
-    /// | `pr_rd`          | `is_pair_paused` (per-asset-pair pause read)        |
-    /// | `reconcile`      | `reconcile_state`                                   |
-    /// | `checksum`       | `compute_state_checksum` / `verify_state_checksum`  |
-    /// | `snapshot`       | reconciliation snapshot history                     |
-    /// | `export_score`   | `export_score` / `export_all_scores`                |
-    /// | `freeze`         | `freeze_contract` / `unfreeze_contract`             |
-    /// | `arch`           | architecture owner and mandatory-reviewer reads      |
+    /// | `pr_rd`          | `is_pair_paused` (per-asset-pair pause read)       |
+    /// | `dprv`           | differential-privacy configuration and queries     |
+    /// | `meta`           | `get_interface_metadata`                           |
+    /// | `reconcile`      | `reconcile_state`                                  |
+    /// | `checksum`       | `compute_state_checksum` / `verify_state_checksum` |
+    /// | `snapshot`       | reconciliation snapshot history                    |
+    /// | `export_score`   | `export_score` / `export_all_scores`               |
+    /// | `freeze`         | `freeze_contract` / `unfreeze_contract`            |
+    /// | `arch`           | architecture owner and mandatory-reviewer reads    |
+    /// | `restore`        | `restore_snapshot`                                 |
     ///
     /// Any unrecognised `capability` returns `false`.
     ///
@@ -5792,31 +5816,7 @@ impl ScoreGateScoreContract {
     /// — both sides go through Soroban's normal Symbol serialization — so
     /// callers can pass either form.
     pub fn supports_interface(env: Env, capability: Symbol) -> bool {
-        capability == symbol_short!("score")
-            || capability == symbol_short!("history")
-            || capability == symbol_short!("hpag")
-            || capability == symbol_short!("batch")
-            || capability == symbol_short!("gate")
-            || capability == symbol_short!("aggr")
-            || capability == symbol_short!("count")
-            || capability == symbol_short!("var")
-            || capability == Symbol::new(&env, "batch_attested")
-            || capability == symbol_short!("cgate")
-            || capability == Symbol::new(&env, "histogram")
-            || capability == Symbol::new(&env, "rgate")
-            || capability == symbol_short!("emb")
-            || capability == symbol_short!("cons")
-            || capability == symbol_short!("pr_rd")
-            || capability == symbol_short!("dprv")
-            || capability == Symbol::new(&env, "meta")
-            || capability == Symbol::new(&env, "reconcile")
-            || capability == Symbol::new(&env, "checksum")
-            || capability == Symbol::new(&env, "snapshot")
-            || capability == Symbol::new(&env, "export_score")
-            || capability == symbol_short!("freeze")
-            || capability == symbol_short!("arch")
-            || capability == symbol_short!("restore")
-            || capability == Symbol::new(&env, "restore")
+        Self::supported_capabilities(&env).contains(&capability)
     }
 
     // ── Service management ───────────────────────────────────────────────────
@@ -9272,14 +9272,17 @@ impl ScoreGateScoreContract {
     }
 
     /// Update score tier bounds for multiple service signers in a single admin transaction.
-    /// Each entry is `(signer, min_score, max_score)`. Signers must be in the ServiceSet
-    /// and `min_score` must be <= `max_score`; entries failing validation are rejected with an error.
+    /// Each entry is `(signer, min_score, max_score)`. Signers must be in the ServiceSet,
+    /// `min_score` and `max_score` must lie within `[constants::MIN_SCORE, constants::MAX_SCORE]`
+    /// (0–100), and `min_score` must be <= `max_score`. All entries are validated before any
+    /// storage write or event emission so a rejected batch leaves state unchanged.
     /// Emits one `signer_tier_updated` event per successfully updated signer.
     /// Admin only. Bounded by [`constants::MAX_BATCH_SIZE`].
     ///
     /// # Errors
     /// - [`Error::NotInitialized`] if no admin is set.
     /// - [`Error::BatchTooLarge`] if `entries.len() > MAX_BATCH_SIZE`.
+    /// - [`Error::InvalidScore`] if `min_score` or `max_score` exceeds `constants::MAX_SCORE`.
     /// - [`Error::InvalidThreshold`] if `min_score > max_score` for any entry.
     /// - [`Error::SignerNotInSet`] if a signer address is not in the ServiceSet.
     /// - [`Error::InsufficientAdminSigners`] / [`Error::AdminSignerNotInSet`] if auth fails.
@@ -9298,12 +9301,18 @@ impl ScoreGateScoreContract {
         let service_set = storage::get_service_set(&env);
         for i in 0..entries.len() {
             let (signer, min_score, max_score) = entries.get(i).unwrap();
+            if min_score > constants::MAX_SCORE || max_score > constants::MAX_SCORE {
+                return Err(Error::InvalidScore);
+            }
             if min_score > max_score {
                 return Err(Error::InvalidThreshold);
             }
             if !service_set.contains(&signer) {
                 return Err(Error::SignerNotInSet);
             }
+        }
+        for i in 0..entries.len() {
+            let (signer, min_score, max_score) = entries.get(i).unwrap();
             storage::set_signer_tier_bounds(&env, &signer, min_score, max_score);
             events::signer_tier_updated(&env, &signer, min_score, max_score);
         }
@@ -9608,13 +9617,30 @@ impl ScoreGateScoreContract {
 
     /// Returns the number of tokens currently available in the bucket for
     /// `(wallet, asset_pair)`, accounting for any refills since the last
-    /// submission.  Returns 0 when the wallet has never submitted or when all
-    /// tokens are spent and none have refilled yet.
+    /// submission.
+    ///
+    /// In flat cooldown mode (`burst_capacity <= 1`, the default), this
+    /// evaluates the pair's `last_submit_time` against the effective cooldown
+    /// and returns `0` while the cooldown is active or `1` when eligible
+    /// (before the first submission, once the cooldown has elapsed, or after
+    /// an admin rate-limit override).
+    ///
+    /// In burst mode (`burst_capacity > 1`), this inspects the stored
+    /// `TokenBucket` and returns `capacity` when the wallet has never
+    /// submitted in burst mode, or the refilled token count capped at
+    /// `capacity`.
     pub fn get_remaining_tokens(env: Env, wallet: Address, asset_pair: Symbol) -> u32 {
         let capacity = storage::get_burst_capacity(&env);
         let base_cooldown = storage::get_pair_cooldown_secs(&env, &asset_pair);
         let cooldown = Self::compute_effective_cooldown(&env, &asset_pair, base_cooldown);
         let now = env.ledger().timestamp();
+        if capacity <= 1 {
+            let last_submit = storage::get_last_submit_time(&env, &wallet, &asset_pair);
+            if last_submit != 0 && now < last_submit.saturating_add(cooldown) {
+                return 0;
+            }
+            return capacity;
+        }
         match storage::get_token_bucket(&env, &wallet, &asset_pair) {
             None => capacity, // full bucket — never submitted
             Some(b) => {

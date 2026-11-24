@@ -217,8 +217,11 @@ prevent unbounded growth:
 1. Call `get_parameter_proposal(proposal_id)` to check status — once `Expired`, ready for cleanup.
 2. Call `cleanup_expired_param_proposals(admin_signers)` to permanently remove expired proposals
    that have been expired for **at least 48 hours**.
-3. Emits `prm_clean` event with count and oldest retained proposal timestamp.
-4. Idempotent — safe to call repeatedly without side effects.
+3. Cleanup traverses only the bounded `ParameterProposalIndex` (capped at `MAX_PARAMETER_PROPOSAL_HISTORY`)
+   and `PendingParameterProposalIds` (capped at `MAX_PENDING_PARAMETER_PROPOSALS`), independently of the
+   monotonic lifetime proposal ID counter, and removes deleted IDs from `ParameterProposalIndex`.
+4. Emits `prm_clean` event with count and oldest retained proposal timestamp.
+5. Idempotent — safe to call repeatedly without side effects.
 
 ## Governance Simulation and Audit
 

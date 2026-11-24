@@ -247,6 +247,65 @@ fn test_get_interface_metadata_reports_capabilities_and_semantics() {
     assert!(client.supports_interface(&Symbol::new(&env, "meta")));
 }
 
+#[test]
+fn test_get_interface_metadata_enumerates_every_supported_capability() {
+    let (env, client, _admin, _service) = setup();
+    let metadata = client.get_interface_metadata();
+
+    // Every capability advertised in metadata must be accepted by supports_interface,
+    // and no capability symbol may be listed twice.
+    for i in 0..metadata.capabilities.len() {
+        let cap = metadata.capabilities.get(i).unwrap();
+        assert!(client.supports_interface(&cap));
+        for j in (i + 1)..metadata.capabilities.len() {
+            assert_ne!(cap, metadata.capabilities.get(j).unwrap());
+        }
+    }
+
+    let mut expected_count: u32 = 0;
+    let mut check_cap = |name: &str| {
+        let sym = Symbol::new(&env, name);
+        assert!(client.supports_interface(&sym), "supports_interface should accept '{}'", name);
+        assert!(
+            metadata.capabilities.contains(&sym),
+            "get_interface_metadata should enumerate '{}'",
+            name
+        );
+        expected_count += 1;
+    };
+
+    check_cap("score");
+    check_cap("history");
+    check_cap("hpag");
+    check_cap("batch");
+    check_cap("gate");
+    check_cap("aggr");
+    check_cap("count");
+    check_cap("var");
+    check_cap("batch_attested");
+    check_cap("cgate");
+    check_cap("histogram");
+    check_cap("rgate");
+    check_cap("emb");
+    check_cap("cons");
+    check_cap("pr_rd");
+    check_cap("dprv");
+    check_cap("meta");
+    check_cap("reconcile");
+    check_cap("checksum");
+    check_cap("snapshot");
+    check_cap("export_score");
+    check_cap("freeze");
+    check_cap("arch");
+    check_cap("restore");
+
+    assert_eq!(metadata.capabilities.len(), expected_count);
+
+    let unknown = Symbol::new(&env, "nonexistent_cap");
+    assert!(!metadata.capabilities.contains(&unknown));
+    assert!(!client.supports_interface(&unknown));
+}
+
 // ── RiskScore XDR layout stability ────────────────────────────────────────────
 
 #[test]

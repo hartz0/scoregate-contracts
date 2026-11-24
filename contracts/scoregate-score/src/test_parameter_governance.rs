@@ -593,3 +593,80 @@ fn test_prune_bounded_skips_non_expired_proposals() {
     assert_eq!(client.get_parameter_proposal(&1u64).status, ParameterProposalStatus::Pending);
     assert_eq!(client.get_parameter_proposal(&2u64).status, ParameterProposalStatus::Pending);
 }
+
+// ── Bounded historical proposal cleanup tests (issue #361) ───────────────────
+
+/// `cleanup_expired_param_proposals` must bound its work by the tracked proposal
+/// indexes rather than scanning `1..ParameterProposalNextId`. Even when the
+/// monotonic proposal ID counter is arbitrarily large, cleanup completes within
+/// the default Soroban budget, removes expired proposals past the 48-hour grace
+/// buffer from both storage and `ParameterProposalIndex`, retains recently
+/// expired, vetoed, and pending proposals, and is idempotent on retry.
+#[test]
+fn test_cleanup_expired_param_proposals_bounded_independently_of_next_id() {
+    let (env, client, admin, service) = setup();
+    let value = encode_u64(&env, MIN_COOLDOWN_SECS);
+    let admins = admin_signers(&env, &admin);
+    let services = service_signers(&env, &service);
+
+    // p1: proposed at START_TS -> expires at START_TS + 2*delay, deletable after + 3*delay.
+    let p1 = client.propose_parameter_change(&admins, &param_key_cooldown(), &value);
+
+    // p2: vetoed immediately -> tracked in ParameterProposalIndex, must never be deleted.
+    advance_to(&env, START_TS + 10_000);
+    let p2 = client.propose_parameter_change(&admins, &param_key_cooldown(), &value);
+    client.veto_parameter_change(&services, &p2);
+
+    // p3: proposed at START_TS + delay -> expired at cleanup time, but inside 48h grace buffer.
+    advance_to(&env, START_TS + DEFAULT_UPGRADE_DELAY_SECS);
+    let p3 = client.propose_parameter_change(&admins, &param_key_cooldown(), &value);
+
+    // p4: proposed at START_TS + 2*delay -> still pending at cleanup time.
+    advance_to(&env, START_TS + DEFAULT_UPGRADE_DELAY_SECS * 2);
+    let p4 = client.propose_parameter_change(&admins, &param_key_cooldown(), &value);
+
+    // Simulate a long-lived contract whose monotonic ID counter has grown huge.
+    env.as_contract(&client.address, || {
+        storage::test_set_parameter_proposal_next_id(&env, 1_000_000_000);
+    });
+
+    // Advance past p1's expiry + 48h buffer (DEFAULT_UPGRADE_DELAY_SECS == 48h).
+    advance_to(&env, START_TS + DEFAULT_UPGRADE_DELAY_SECS * 3 + 1);
+
+    let deleted = client.cleanup_expired_param_proposals(&admins);
+    assert_eq!(deleted, 1);
+
+    // p1 was removed from both storage and the historical index.
+    assert_eq!(client.try_get_parameter_proposal(&p1), Err(Ok(Error::ParameterProposalNotFound)));
+    let index = client.get_parameter_proposal_index();
+    assert!(!index.contains(&p1));
+    assert!(index.contains(&p2));
+    assert!(index.contains(&p3));
+
+    // Vetoed, recently-expired (within 48h grace), and pending proposals remain intact.
+    assert_eq!(client.get_parameter_proposal(&p2).status, ParameterProposalStatus::Vetoed);
+    assert_eq!(client.get_parameter_proposal(&p3).status, ParameterProposalStatus::Expired);
+    assert_eq!(client.get_parameter_proposal(&p4).status, ParameterProposalStatus::Pending);
+
+    // Retry is idempotent and deletes nothing further.
+    assert_eq!(client.cleanup_expired_param_proposals(&admins), 0);
+}
+
+#[test]
+fn test_cleanup_expired_param_proposals_uninitialized_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, ScoreGateScoreContract);
+    let client = ScoreGateScoreContractClient::new(&env, &contract_id);
+
+    let result = client.try_cleanup_expired_param_proposals(&Vec::new(&env));
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
+#[should_panic]
+fn test_cleanup_expired_param_proposals_non_admin_rejected() {
+    let (env, client, _admin, _service) = setup();
+    env.set_auths(&[]);
+    client.cleanup_expired_param_proposals(&Vec::new(&env));
+}
