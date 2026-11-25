@@ -183,3 +183,112 @@ fn test_set_signer_tier_before_init_fails() {
     let result = client.try_set_signer_tier(&no_admins, &signer, &0, &100);
     assert_eq!(result, Err(Ok(Error::NotInitialized)));
 }
+
+// ── bulk_set_signer_tier score-domain bounds (issue #362) ────────────────────
+
+#[test]
+fn test_bulk_set_signer_tier_accepts_score_domain_boundaries() {
+    let (env, client) = initialized();
+    let no_admins: Vec<Address> = Vec::new(&env);
+    let s1 = Address::generate(&env);
+    let s2 = Address::generate(&env);
+    let s3 = Address::generate(&env);
+    client.add_service_signer(&no_admins, &s1);
+    client.add_service_signer(&no_admins, &s2);
+    client.add_service_signer(&no_admins, &s3);
+
+    let mut entries = Vec::new(&env);
+    entries.push_back((s1.clone(), 0_u32, 0_u32));
+    entries.push_back((s2.clone(), 100_u32, 100_u32));
+    entries.push_back((s3.clone(), 0_u32, 100_u32));
+
+    client.bulk_set_signer_tier(&no_admins, &entries);
+
+    assert_eq!(client.get_signer_tier(&s1), (0_u32, 0_u32));
+    assert_eq!(client.get_signer_tier(&s2), (100_u32, 100_u32));
+    assert_eq!(client.get_signer_tier(&s3), (0_u32, 100_u32));
+}
+
+#[test]
+fn test_bulk_set_signer_tier_rejects_max_above_100() {
+    let (env, client) = initialized();
+    let no_admins: Vec<Address> = Vec::new(&env);
+    let signer = Address::generate(&env);
+    client.add_service_signer(&no_admins, &signer);
+
+    let mut entries = Vec::new(&env);
+    entries.push_back((signer.clone(), 0_u32, 101_u32));
+
+    let result = client.try_bulk_set_signer_tier(&no_admins, &entries);
+    assert_eq!(result, Err(Ok(Error::InvalidScore)));
+    assert_eq!(client.get_signer_tier(&signer), (0_u32, 100_u32));
+}
+
+#[test]
+fn test_bulk_set_signer_tier_rejects_min_above_100() {
+    let (env, client) = initialized();
+    let no_admins: Vec<Address> = Vec::new(&env);
+    let signer = Address::generate(&env);
+    client.add_service_signer(&no_admins, &signer);
+
+    let mut entries = Vec::new(&env);
+    entries.push_back((signer.clone(), 101_u32, 101_u32));
+    assert_eq!(client.try_bulk_set_signer_tier(&no_admins, &entries), Err(Ok(Error::InvalidScore)));
+
+    let mut entries_high = Vec::new(&env);
+    entries_high.push_back((signer.clone(), 101_u32, 200_u32));
+    assert_eq!(
+        client.try_bulk_set_signer_tier(&no_admins, &entries_high),
+        Err(Ok(Error::InvalidScore))
+    );
+}
+
+#[test]
+fn test_bulk_set_signer_tier_rejects_inverted_in_domain_bounds() {
+    let (env, client) = initialized();
+    let no_admins: Vec<Address> = Vec::new(&env);
+    let signer = Address::generate(&env);
+    client.add_service_signer(&no_admins, &signer);
+
+    let mut entries = Vec::new(&env);
+    entries.push_back((signer, 80_u32, 20_u32));
+
+    assert_eq!(
+        client.try_bulk_set_signer_tier(&no_admins, &entries),
+        Err(Ok(Error::InvalidThreshold))
+    );
+}
+
+#[test]
+fn test_bulk_set_signer_tier_is_atomic_when_later_entry_exceeds_max_score() {
+    let (env, client) = initialized();
+    let no_admins: Vec<Address> = Vec::new(&env);
+    let s1 = Address::generate(&env);
+    let s2 = Address::generate(&env);
+    client.add_service_signer(&no_admins, &s1);
+    client.add_service_signer(&no_admins, &s2);
+
+    let mut entries = Vec::new(&env);
+    entries.push_back((s1.clone(), 10_u32, 50_u32));
+    entries.push_back((s2.clone(), 0_u32, 101_u32));
+
+    assert_eq!(client.try_bulk_set_signer_tier(&no_admins, &entries), Err(Ok(Error::InvalidScore)));
+    // First valid signer must remain at its prior default tier because the batch failed.
+    assert_eq!(client.get_signer_tier(&s1), (0_u32, 100_u32));
+    assert_eq!(client.get_signer_tier(&s2), (0_u32, 100_u32));
+}
+
+#[test]
+fn test_bulk_set_signer_tier_rejects_unregistered_signer() {
+    let (env, client) = initialized();
+    let no_admins: Vec<Address> = Vec::new(&env);
+    let outsider = Address::generate(&env);
+
+    let mut entries = Vec::new(&env);
+    entries.push_back((outsider, 10_u32, 80_u32));
+
+    assert_eq!(
+        client.try_bulk_set_signer_tier(&no_admins, &entries),
+        Err(Ok(Error::SignerNotInSet))
+    );
+}

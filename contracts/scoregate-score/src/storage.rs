@@ -995,22 +995,27 @@ pub fn prune_expired_parameter_proposals(env: &Env) {
     prune_expired_parameter_proposals_bounded(env, crate::constants::MAX_PENDING_PARAMETER_PROPOSALS);
 }
 
-/// Deletes all expired proposals from storage that have been expired for at least 48 hours.
-/// Returns (count_deleted, oldest_proposal_kept_timestamp).
+/// Deletes expired historical proposals from storage that have been expired for at least 48 hours.
+///
+/// Work is bounded by the tracked proposal indexes (`ParameterProposalIndex` and
+/// `PendingParameterProposalIds`), independent of the monotonic `ParameterProposalNextId`
+/// counter, so cleanup stays bounded within a single transaction regardless of total lifetime
+/// proposal count.
+///
+/// Returns `(count_deleted, oldest_proposal_kept_timestamp)`.
 pub fn cleanup_expired_parameter_proposals(env: &Env) -> (u32, u64) {
     prune_expired_parameter_proposals(env);
     let now = env.ledger().timestamp();
-    let ttl_buffer_secs = 48 * 3600;
-    let mut count = 0;
+    let ttl_buffer_secs: u64 = 48 * 3600;
+    let mut count: u32 = 0;
     let mut oldest_kept = u64::MAX;
 
-    let next_id = env
-        .storage()
-        .instance()
-        .get::<DataKeyB, u64>(&DataKeyB::ParameterProposalNextId)
-        .unwrap_or(1);
+    let historical_ids = get_parameter_proposal_index(env);
+    let mut kept_historical_ids = Vec::new(env);
+    let mut index_changed = false;
 
-    for id in 1..next_id {
+    for i in 0..historical_ids.len() {
+        let id = historical_ids.get(i).unwrap();
         if let Some(record) = get_parameter_proposal_record(env, id) {
             if record.status == ParameterProposalStatus::Expired {
                 let expiry = record
@@ -1021,9 +1026,27 @@ pub fn cleanup_expired_parameter_proposals(env: &Env) -> (u32, u64) {
                     env.storage().instance().remove(&DataKeyB::ParameterProposal(id));
                     env.storage().persistent().remove(&DataKeyB::ParameterProposal(id));
                     count += 1;
+                    index_changed = true;
                     continue;
                 }
             }
+            kept_historical_ids.push_back(id);
+            if record.proposal.proposed_at < oldest_kept {
+                oldest_kept = record.proposal.proposed_at;
+            }
+        } else {
+            index_changed = true;
+        }
+    }
+
+    if index_changed {
+        set_parameter_proposal_index(env, &kept_historical_ids);
+    }
+
+    let pending_ids = get_pending_parameter_proposal_ids(env);
+    for i in 0..pending_ids.len() {
+        let id = pending_ids.get(i).unwrap();
+        if let Some(record) = get_parameter_proposal_record(env, id) {
             if record.proposal.proposed_at < oldest_kept {
                 oldest_kept = record.proposal.proposed_at;
             }
@@ -1031,6 +1054,13 @@ pub fn cleanup_expired_parameter_proposals(env: &Env) -> (u32, u64) {
     }
 
     (count, if oldest_kept == u64::MAX { now } else { oldest_kept })
+}
+
+/// Overrides the monotonic proposal ID counter directly in storage for tests
+/// that verify cleanup stays bounded independently of total lifetime proposal IDs.
+#[cfg(test)]
+pub fn test_set_parameter_proposal_next_id(env: &Env, next_id: u64) {
+    env.storage().instance().set(&DataKeyB::ParameterProposalNextId, &next_id);
 }
 
 /// Seeds `count` pending proposals directly in storage for cap tests without

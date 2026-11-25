@@ -790,3 +790,165 @@ fn test_same_ledger_batch_burst_successive_invocations() {
     assert!(!result.results.get(3).unwrap().accepted);
     assert_eq!(result.results.get(3).unwrap().rejection_code, Error::RateLimitExceeded as u32);
 }
+
+// ── Remaining capacity in flat cooldown mode (issue #363) ────────────────────
+
+#[test]
+fn test_get_remaining_tokens_flat_cooldown_lifecycle() {
+    let (env, client, _admin) = setup();
+    let wallet = Address::generate(&env);
+    let pair = symbol_short!("XLM_USDC");
+
+    // Default mode is flat cooldown (burst capacity == 1).
+    assert_eq!(client.get_burst_capacity(), 1);
+    assert_eq!(client.get_remaining_tokens(&wallet, &pair), 1);
+
+    // First submission consumes the single flat-cooldown slot.
+    client.submit_score(
+        &Vec::new(&env),
+        &wallet,
+        &pair,
+        &50,
+        &false,
+        &false,
+        &START_TS,
+        &90,
+        &1,
+        &None,
+    );
+    assert_eq!(client.get_remaining_tokens(&wallet, &pair), 0);
+
+    // Immediate retry must fail with RateLimitExceeded.
+    let retry = client.try_submit_score(
+        &Vec::new(&env),
+        &wallet,
+        &pair,
+        &55,
+        &false,
+        &false,
+        &START_TS,
+        &90,
+        &1,
+        &None,
+    );
+    assert_eq!(retry, Err(Ok(Error::RateLimitExceeded)));
+
+    // One second before cooldown elapses, remaining capacity is still 0.
+    advance_to(&env, START_TS + DEFAULT_COOLDOWN_SECS - 1);
+    assert_eq!(client.get_remaining_tokens(&wallet, &pair), 0);
+
+    // At the exact cooldown boundary, capacity returns to 1 and submission succeeds.
+    let boundary_ts = START_TS + DEFAULT_COOLDOWN_SECS;
+    advance_to(&env, boundary_ts);
+    assert_eq!(client.get_remaining_tokens(&wallet, &pair), 1);
+
+    client.submit_score(
+        &Vec::new(&env),
+        &wallet,
+        &pair,
+        &60,
+        &false,
+        &false,
+        &boundary_ts,
+        &90,
+        &1,
+        &None,
+    );
+    assert_eq!(client.get_remaining_tokens(&wallet, &pair), 0);
+}
+
+#[test]
+fn test_get_remaining_tokens_flat_cooldown_pair_and_admin_override() {
+    let (env, client, _admin) = setup();
+    let wallet = Address::generate(&env);
+    let pair = symbol_short!("XLM_USDC");
+
+    client.set_pair_cooldown(&Vec::new(&env), &pair, &120);
+    client.submit_score(
+        &Vec::new(&env),
+        &wallet,
+        &pair,
+        &45,
+        &false,
+        &false,
+        &START_TS,
+        &90,
+        &1,
+        &None,
+    );
+
+    advance_to(&env, START_TS + 119);
+    assert_eq!(client.get_remaining_tokens(&wallet, &pair), 0);
+
+    let next_ts = START_TS + 120;
+    advance_to(&env, next_ts);
+    assert_eq!(client.get_remaining_tokens(&wallet, &pair), 1);
+
+    // Re-submit then verify admin override restores remaining capacity to 1 immediately.
+    client.submit_score(
+        &Vec::new(&env),
+        &wallet,
+        &pair,
+        &48,
+        &false,
+        &false,
+        &next_ts,
+        &90,
+        &1,
+        &None,
+    );
+    assert_eq!(client.get_remaining_tokens(&wallet, &pair), 0);
+
+    client.override_rate_limit(
+        &Vec::new(&env),
+        &wallet,
+        &pair,
+        &Bytes::from_slice(&env, b"operator-recovery"),
+    );
+    assert_eq!(client.get_remaining_tokens(&wallet, &pair), 1);
+}
+
+#[test]
+fn test_get_remaining_tokens_flat_mode_after_lowering_burst_capacity() {
+    let (env, client, _admin) = setup();
+    let wallet = Address::generate(&env);
+    let pair = symbol_short!("XLM_USDC");
+
+    // Start in burst mode and submit once (leaves 2 tokens in TokenBucket).
+    client.set_burst_capacity(&3);
+    client.submit_score(
+        &Vec::new(&env),
+        &wallet,
+        &pair,
+        &40,
+        &false,
+        &false,
+        &START_TS,
+        &90,
+        &1,
+        &None,
+    );
+    assert_eq!(client.get_remaining_tokens(&wallet, &pair), 2);
+
+    // Switch back to flat cooldown mode; remaining capacity must match flat enforcement (0).
+    client.set_burst_capacity(&1);
+    assert_eq!(client.get_remaining_tokens(&wallet, &pair), 0);
+    assert_eq!(
+        client.try_submit_score(
+            &Vec::new(&env),
+            &wallet,
+            &pair,
+            &42,
+            &false,
+            &false,
+            &START_TS,
+            &90,
+            &1,
+            &None,
+        ),
+        Err(Ok(Error::RateLimitExceeded))
+    );
+
+    advance_to(&env, START_TS + DEFAULT_COOLDOWN_SECS);
+    assert_eq!(client.get_remaining_tokens(&wallet, &pair), 1);
+}
